@@ -3,8 +3,8 @@
 --  This is the test double for every other device. Besides Read /
 --  Write / Sync it can simulate the fault model the log is designed
 --  for:
---    * Tear_Next_Write: the next Write lands with its second half
---      replaced by garbage, as a power loss mid-block would leave it.
+--    * Tear_Next_Write: the next Write lands with its front half
+--      replaced by garbage, as a power loss mid-record would leave it.
 --    * Drop_Unsynced: forget every Write since the last Sync, as a
 --      power loss between Write and Sync would.
 --  The showcase and the tests use these to check that Open recovers

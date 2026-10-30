@@ -1,13 +1,16 @@
 package body Legder.Record_Format with SPARK_Mode is
 
-   Off_Magic  : constant := 0;
-   Off_Seq    : constant := 4;
-   Off_Kind   : constant := 12;
-   Off_KLen   : constant := 13;
-   Off_VLen   : constant := 14;
-   Off_Key    : constant := 16;
-   Off_Value  : constant := 48;
-   Off_CRC    : constant := 508;
+   Off_Kind : constant := 0;
+   Off_Seq  : constant := 1;
+   Off_Key  : constant := 9;
+
+   function Off_Value (K_Size : Key_Size) return Block_Offset is
+     (Block_Offset (Off_Key + K_Size));
+
+   function Off_CRC (K_Size : Key_Size; V_Size : Value_Size) return Block_Offset is
+     (Block_Offset (Off_Key + K_Size + V_Size))
+     with Pre => Off_Key + K_Size + V_Size <= Block_Size - 4;
+   --  The CRC trails the payload, so its input is one unbroken range.
 
    procedure Put_U32 (B : in out Block; At_Off : Block_Offset; V : CRC32)
      with Pre => At_Off <= Block_Size - 4;
@@ -58,57 +61,62 @@ package body Legder.Record_Format with SPARK_Mode is
    -- Encode --
    ------------
 
-   procedure Encode (R : Log_Record; B : out Block) is
+   procedure Encode (R : Log_Record; K_Size : Key_Size; V_Size : Value_Size; B : out Block) is
+      CRC_At : constant Block_Offset := Off_CRC (K_Size, V_Size);
+      Val_At : constant Block_Offset := Off_Value (K_Size);
    begin
       B := [others => 0];
-      Put_U32 (B, Off_Magic, Magic);
-      Put_U64 (B, Off_Seq, R.Seq);
       B (Off_Kind) := (case R.Kind is when Put => 0, when Delete => 1);
-      B (Off_KLen) := Byte (R.K.Length);
-      B (Off_VLen)     := Byte (R.V.Length mod 256);
-      B (Off_VLen + 1) := Byte (R.V.Length / 256);
-      for I in 1 .. R.K.Length loop
+      Put_U64 (B, Off_Seq, R.Seq);
+      for I in 1 .. K_Size loop
          B (Off_Key + I - 1) := R.K.Bytes (I);
       end loop;
       if R.Kind = Put then
-         for I in 1 .. R.V.Length loop
-            B (Off_Value + I - 1) := R.V.Bytes (I);
+         for I in 1 .. V_Size loop
+            B (Val_At + I - 1) := R.V.Bytes (I);
          end loop;
       end if;
-      Put_U32 (B, Off_CRC, CRC (B (0 .. Off_CRC - 1)));
+      Put_U32 (B, CRC_At, CRC (B (0 .. CRC_At - 1)));
    end Encode;
 
    ------------
    -- Decode --
    ------------
 
-   procedure Decode (B : Block; R : out Log_Record; Valid : out Boolean) is
-      KL : constant Natural := Natural (B (Off_KLen));
-      VL : constant Natural := Natural (B (Off_VLen)) + 256 * Natural (B (Off_VLen + 1));
+   procedure Decode (B : Block; K_Size : Key_Size; V_Size : Value_Size;
+                     R : out Log_Record; Valid : out Boolean) is
+      CRC_At : constant Block_Offset := Off_CRC (K_Size, V_Size);
+      Val_At : constant Block_Offset := Off_Value (K_Size);
    begin
       R := (others => <>);
       Valid := False;
-      if Get_U32 (B, Off_Magic) /= Magic then
+
+      if B (Off_Kind) > 1 then
          return;
       end if;
-      if B (Off_Kind) > 1 or else KL > Max_Key or else VL > Max_Value then
+
+      if Get_U32 (B, CRC_At) /= CRC (B (0 .. CRC_At - 1)) then
          return;
       end if;
-      if Get_U32 (B, Off_CRC) /= CRC (B (0 .. Off_CRC - 1)) then
-         return;
-      end if;
+
       R.Seq  := Get_U64 (B, Off_Seq);
       R.Kind := (if B (Off_Kind) = 0 then Put else Delete);
-      R.K.Length := KL;
-      for I in 1 .. KL loop
+
+      R.K.Length := K_Size;
+      for I in 1 .. K_Size loop
          R.K.Bytes (I) := B (Off_Key + I - 1);
       end loop;
+
+      R.V.Length := V_Size;
       if R.Kind = Put then
-         R.V.Length := VL;
-         for I in 1 .. VL loop
-            R.V.Bytes (I) := B (Off_Value + I - 1);
+         for I in 1 .. V_Size loop
+            R.V.Bytes (I) := B (Val_At + I - 1);
          end loop;
+      elsif (for some I in 1 .. V_Size => B (Val_At + I - 1) /= 0) then
+         --  A Delete's payload is V zero bytes.
+         return;
       end if;
+
       Valid := True;
    end Decode;
 

@@ -32,7 +32,8 @@ package body Legder.RAM_Device with SPARK_Mode is
          declare
             Torn : Block := Data;
          begin
-            for I in Block_Size / 2 .. Block_Size - 1 loop
+            --  The front half, where every record starts.
+            for I in 0 .. Block_Size / 2 - 1 loop
                Torn (I) := Byte ((I * 7 + 13) mod 256);
             end loop;
             Pending (Index) := Torn;
