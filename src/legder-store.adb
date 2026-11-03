@@ -60,6 +60,12 @@ package body Legder.Store with SPARK_Mode is
       end case;
    end Apply;
 
+   -------------
+   -- Is_Open --
+   -------------
+
+   function Is_Open (S : Store) return Boolean is (S.Log.Opened);
+
    ----------
    -- Open --
    ----------
@@ -80,12 +86,27 @@ package body Legder.Store with SPARK_Mode is
       end if;
    end Open;
 
+   ------------
+   -- Unload --
+   ------------
+
+   procedure Unload (S : in out Store) is
+   begin
+      S.Table := [others => <>];
+      S.Live := 0;
+      S.Log.Opened := False;
+   end Unload;
+
    ---------
    -- Put --
    ---------
 
    procedure Put (S : in out Store; K : Key; V : Value; Success : out Boolean) is
    begin
+      if not S.Log.Opened then
+         Success := False;
+         return;
+      end if;
       if Find (S.Table, K) = 0 and then Free_Slot (S.Table) = 0 then
          Success := False;  --  S3: refuse before touching the log
          return;
@@ -104,6 +125,10 @@ package body Legder.Store with SPARK_Mode is
    procedure Delete (S : in out Store; K : Key; Success : out Boolean) is
       None : Value;
    begin
+      if not S.Log.Opened then
+         Success := False;
+         return;
+      end if;
       L.Append (S.Log, Record_Format.Delete, K, None, Success);
       if Success then
          Apply (S.Table, S.Live,
@@ -116,8 +141,14 @@ package body Legder.Store with SPARK_Mode is
    ---------
 
    procedure Get (S : Store; K : Key; V : out Value; Found : out Boolean) is
-      I : constant Natural := Find (S.Table, K);
+      I : Natural;
    begin
+      if not S.Log.Opened then
+         V := (others => <>);
+         Found := False;
+         return;
+      end if;
+      I := Find (S.Table, K);
       if I = 0 then
          V := (others => <>);
          Found := False;
@@ -127,6 +158,7 @@ package body Legder.Store with SPARK_Mode is
       end if;
    end Get;
 
-   function Count (S : Store) return Natural is (S.Live);
+   function Count (S : Store) return Natural is
+     (if S.Log.Opened then S.Live else 0);
 
 end Legder.Store;

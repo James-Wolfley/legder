@@ -276,6 +276,96 @@ procedure Tests is
       end;
    end Test_Store;
 
+   procedure Test_Unload is
+      N     : Natural;
+      St    : Open_Status;
+      OK    : Boolean;
+      Got   : Value;
+      Found : Boolean;
+      W     : Natural;
+      Sy    : Natural;
+      Exact : Boolean;
+
+      --  Every store operation must refuse while the store is closed,
+      --  with no device I/O and no live entries.
+      function Refuses_All (S : in out KV.Store; W, Sy : Natural) return Boolean is
+         Put_OK    : Boolean := True;
+         Delete_OK : Boolean := True;
+         Got       : Value := V ("x");
+         Found     : Boolean := True;
+      begin
+         KV.Put (S, K ("x"), V ("1"), Put_OK);
+         KV.Delete (S, K ("x"), Delete_OK);
+         KV.Get (S, K ("x"), Got, Found);
+         return not Put_OK and then not Delete_OK
+                and then not Found and then All_Zero (Got)
+                and then KV.Count (S) = 0
+                and then not KV.Is_Open (S)
+                and then Dev.Writes = W and then Dev.Syncs = Sy;
+      end Refuses_All;
+
+   begin
+      Dev.Erase;
+      declare
+         S        : KV.Store;
+         Was_Open : Boolean;
+         Refused  : Boolean;
+      begin
+         Refused := Refuses_All (S, Dev.Writes, Dev.Syncs);
+         KV.Open (S, N, St);
+         Was_Open := St = Opened and then KV.Is_Open (S);
+         KV.Put (S, K ("x"), V ("1"), OK);
+         KV.Put (S, K ("y"), V ("2"), OK);
+         KV.Put (S, K ("x"), V ("3"), OK);
+         KV.Delete (S, K ("y"), OK);
+         W := Dev.Writes;
+         Sy := Dev.Syncs;
+         KV.Unload (S);
+         KV.Unload (S);
+         Check ("unload is idempotent and does no device I/O",
+                Was_Open and then not KV.Is_Open (S)
+                and then Dev.Writes = W and then Dev.Syncs = Sy);
+         Check ("never-opened and unloaded stores refuse operations",
+                Refused and then Refuses_All (S, W, Sy));
+         KV.Open (S, N, St);
+         KV.Get (S, K ("x"), Got, Found);
+         Exact := St = Opened and then N = 4 and then KV.Is_Open (S)
+                  and then Found and then Same (Got, V ("3"))
+                  and then KV.Count (S) = 1;
+         KV.Get (S, K ("y"), Got, Found);
+         Exact := Exact and then not Found;
+         KV.Put (S, K ("z"), V ("4"), OK);
+         KV.Unload (S);
+         Check ("reopen recovers exact contents after unload", Exact and then OK);
+         KV.Open (S, N, St);
+         KV.Get (S, K ("z"), Got, Found);
+         Exact := St = Opened and then N = 5 and then KV.Is_Open (S)
+                  and then Found and then Same (Got, V ("4"));
+         Check ("write after reload survives the next reload",
+                Exact and then KV.Count (S) = 2);
+      end;
+
+      Dev.Erase;
+      declare
+         B : Block;
+         S : KV.Store;
+      begin
+         Header_Block (K_Bytes, V_Bytes, B);
+         Dev.Write (0, B);
+         Dev.Sync;
+         Dev.Read (0, B);
+         B (5) := B (5) xor 1;
+         Dev.Write (0, B);
+         Dev.Sync;
+         KV.Open (S, N, St);
+         W := Dev.Writes;
+         Sy := Dev.Syncs;
+         Check ("failed open leaves a closed store",
+                St = Bad_Header and then not KV.Is_Open (S)
+                and then Refuses_All (S, W, Sy));
+      end;
+   end Test_Unload;
+
    procedure Test_Lengths is
       S       : KV.Store;
       N       : Natural;
@@ -334,6 +424,7 @@ begin
    Test_Record;
    Test_Log;
    Test_Store;
+   Test_Unload;
    Test_Lengths;
    Test_Capacity;
    New_Line;
