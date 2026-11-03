@@ -38,28 +38,40 @@ package Legder.Store with SPARK_Mode is
 
    type Store is limited private;
 
+   function Is_Open (S : Store) return Boolean;
+   --  True after a successful Open, until Unload.
+
    procedure Open (S : out Store; Replayed : out Natural; Status : out Open_Status)
-     with Pre => Fits_In_Block (K_Size, V_Size);
+     with Pre  => Fits_In_Block (K_Size, V_Size),
+          Post => (if Status = Opened then Is_Open (S) else not Is_Open (S));
    --  Recovers from the device. Replayed is the number of committed
    --  records found and applied. Only Status = Opened leaves a usable
    --  store.
 
+   procedure Unload (S : in out Store)
+     with Post => not Is_Open (S);
+   --  Discards the in-memory table. The log stays durable on the
+   --  device; no device I/O. Safe to repeat.
+
    procedure Put (S : in out Store; K : Key; V : Value; Success : out Boolean)
      with Pre => K.Length = K_Size and then V.Length = V_Size;
    --  Durable on return with Success. False when the log is full or
-   --  the table is full and K is new.
+   --  the table is full and K is new. On a closed store, False with
+   --  no device I/O and no table change.
 
    procedure Delete (S : in out Store; K : Key; Success : out Boolean)
      with Pre => K.Length = K_Size;
    --  Durable on return with Success. Deleting an absent key is a
    --  successful no-op that still writes a record (simplest correct
    --  behaviour; optimising it away is fine once S1 is proved).
+   --  On a closed store, False with no device I/O and no table change.
 
    procedure Get (S : Store; K : Key; V : out Value; Found : out Boolean)
      with Pre => K.Length = K_Size;
+   --  On a closed store, V is zero and Found is False.
 
    function Count (S : Store) return Natural;
-   --  Live keys.
+   --  Live keys. Zero on a closed store.
 
 private
 
