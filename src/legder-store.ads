@@ -24,6 +24,8 @@
 with Legder.Log;
 
 generic
+   K_Size      : Key_Size;
+   V_Size      : Value_Size;
    Block_Count : Block_Index;
    with procedure Read  (Index : Block_Index; Data : out Block);
    with procedure Write (Index : Block_Index; Data : Block);
@@ -36,20 +38,25 @@ package Legder.Store with SPARK_Mode is
 
    type Store is limited private;
 
-   procedure Open (S : out Store; Replayed : out Natural);
+   procedure Open (S : out Store; Replayed : out Natural; Status : out Open_Status)
+     with Pre => Fits_In_Block (K_Size, V_Size);
    --  Recovers from the device. Replayed is the number of committed
-   --  records found and applied.
+   --  records found and applied. Only Status = Opened leaves a usable
+   --  store.
 
-   procedure Put (S : in out Store; K : Key; V : Value; Success : out Boolean);
+   procedure Put (S : in out Store; K : Key; V : Value; Success : out Boolean)
+     with Pre => K.Length = K_Size and then V.Length = V_Size;
    --  Durable on return with Success. False when the log is full or
    --  the table is full and K is new.
 
-   procedure Delete (S : in out Store; K : Key; Success : out Boolean);
+   procedure Delete (S : in out Store; K : Key; Success : out Boolean)
+     with Pre => K.Length = K_Size;
    --  Durable on return with Success. Deleting an absent key is a
    --  successful no-op that still writes a record (simplest correct
    --  behaviour; optimising it away is fine once S1 is proved).
 
-   procedure Get (S : Store; K : Key; V : out Value; Found : out Boolean);
+   procedure Get (S : Store; K : Key; V : out Value; Found : out Boolean)
+     with Pre => K.Length = K_Size;
 
    function Count (S : Store) return Natural;
    --  Live keys.
@@ -65,7 +72,7 @@ private
    type Entry_Index is range 1 .. Max_Entries;
    type Entry_Array is array (Entry_Index) of Entry_Rec;
 
-   package L is new Legder.Log (Block_Count, Read, Write, Sync);
+   package L is new Legder.Log (K_Size, V_Size, Block_Count, Read, Write, Sync);
 
    type Store is limited record
       Log   : L.State;

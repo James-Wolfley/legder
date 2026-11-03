@@ -1,8 +1,9 @@
 --  The write-ahead log: a sequence of records in consecutive blocks.
 --
---  Block 0 .. Block_Count hold records. The log is append-only and
---  wraps never in v1 (when full, Append fails). Compaction is a
---  milestone.
+--  Block 0 holds the store header; records occupy blocks 1 ..
+--  Block_Count. The log is append-only and wraps never in v1 (when
+--  full, Append fails). Compaction is a milestone. A record is
+--  Record_Overhead + K_Size + V_Size bytes, fixed for the store's life.
 --
 --  Commit protocol, and why it is crash-safe:
 --    1. Encode the record with Seq = Last_Seq + 1.
@@ -15,8 +16,9 @@
 --  observed after recovery is exactly the committed prefix.
 --
 --  PROOF TARGET
---    L1  Scan visits blocks 0 .. N in order and stops at the first
---        block that is not Valid with Seq = previous + 1.
+--    L1  Recovery visits blocks 1 .. Head - 1 in order. Open stops at
+--        the first block that is not Valid with Seq = previous + 1;
+--        Scan stops at the first block that is not Valid.
 --    L2  After Append succeeds and Sync returns, Scan finds the new
 --        record as the last one (needs a device model; see tests).
 --    L3  Append never writes a block other than Head.
@@ -24,6 +26,8 @@
 with Legder.Record_Format; use Legder.Record_Format;
 
 generic
+   K_Size      : Key_Size;
+   V_Size      : Value_Size;
    Block_Count : Block_Index;
    with procedure Read  (Index : Block_Index; Data : out Block);
    with procedure Write (Index : Block_Index; Data : Block);
@@ -35,7 +39,7 @@ package Legder.Log with SPARK_Mode is
    --  log is full.
 
    type State is record
-      Head     : Position := 0;
+      Head     : Position := 1;
       Last_Seq : Sequence := 0;
       Opened   : Boolean  := False;
    end record;
@@ -43,14 +47,18 @@ package Legder.Log with SPARK_Mode is
    function Is_Full (S : State) return Boolean is
      (S.Head > Natural (Block_Count));
 
-   procedure Open (S : out State; Recovered : out Natural)
-     with Post => S.Opened;
-   --  Scans from block 0, stops at the first gap, sets Head and
-   --  Last_Seq. Recovered is how many valid records were found. The
-   --  store replays them through Scan.
+   procedure Open (S : out State; Recovered : out Natural; Status : out Open_Status)
+     with Pre  => Fits_In_Block (K_Size, V_Size),
+          Post => (if Status = Opened then S.Opened else not S.Opened);
+   --  Reads block 0, then scans blocks 1 .. until the first gap, setting
+   --  Head and Last_Seq. Writes the header on an erased device; refuses
+   --  on any other unusable one, writing nothing. Recovered is the
+   --  number of valid records found.
 
    procedure Append (S : in out State; Kind : Op_Kind; K : Key; V : Value; Success : out Boolean)
-     with Pre  => S.Opened,
+     with Pre  => S.Opened
+                  and then K.Length = K_Size
+                  and then (if Kind = Put then V.Length = V_Size),
           Post => S.Opened
                   and then (if Success then S.Head = S.Head'Old + 1
                                           and then S.Last_Seq = S.Last_Seq'Old + 1
@@ -63,7 +71,7 @@ package Legder.Log with SPARK_Mode is
       with procedure Visit (R : Log_Record);
    procedure Scan (S : State)
      with Pre => S.Opened;
-   --  Calls Visit for each committed record, in order, from block 0
-   --  to Head - 1. Used by Open (to count) and by the store (to replay).
+   --  Calls Visit for each committed record, in order, from block 1
+   --  to Head - 1. Used by the store to replay the prefix Open found.
 
 end Legder.Log;

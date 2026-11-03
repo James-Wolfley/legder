@@ -11,6 +11,8 @@ Legder.Log          append-only WAL, recovery by scan         generic over the d
      |
 Legder.Record_Format  one block <-> one record, CRC           pure
      |
+Legder.Header       block 0: magic, version, K, V, CRC        pure
+     |
 Legder              Byte, Block, Key, Value, Sequence, CRC    pure
      |
 device              Read (Index, out Block) / Write (Index, Block) / Sync
@@ -35,13 +37,23 @@ dispatch on at runtime, and SPARK sees plain calls.
 Keys compare on live bytes only (`"="` is overridden); padding is
 never significant.
 
+## Header
+
+Block 0 holds a 12-byte header: magic, version, key size, value size,
+and a CRC-32 over the first eight bytes. It declares K and V once, and
+they are fixed for the life of the store. It is written on an erased
+device before any record, and validated on every open. A block 0 that
+is neither erased nor a valid header is refused, never overwritten.
+
 ## Record format
 
 One record per block, fixed offsets (table in
-`legder-record_format.ads`). Magic, sequence, kind, key, value,
-reserved, CRC over everything before it. `Decode` is total: anything
-that is not a record (erased FF, zeroed, torn, bit-flipped) comes back
-`Valid = False`.
+`legder-record_format.ads`). Kind, sequence, key, value, CRC over
+everything before it. No magic and no lengths: the header supplies K
+and V, so every record carries exactly K + V payload bytes, and a
+Delete writes V zero bytes that `Decode` checks. `Decode` is total:
+anything that is not a record (erased FF, zeroed, torn, bit-flipped)
+comes back `Valid = False`.
 
 Why fixed layout and one block per record: a partial write corrupts
 at most one record, and that record fails its CRC. That single fact is
@@ -50,14 +62,20 @@ block would need a second-level commit marker; not for v1.
 
 ## Log
 
-Blocks `0 .. Block_Count` in order. `Head` is the next free block.
+Block 0 holds the header. Records occupy blocks `1 .. Block_Count` in
+order. `Head` is the next free block.
 
 Commit: encode with `Seq = Last_Seq + 1`, write block `Head`, `Sync`,
-then advance. Recovery (`Open`): read from 0, accept a block only if
-`Valid` and `Seq = previous + 1`, stop at the first that is not. The
-accepted prefix is exactly the set of commits whose `Sync` returned.
+then advance. Recovery (`Open`): read and validate block 0, then read
+records from block 1, accept a block only if `Valid` and
+`Seq = previous + 1`, stop at the first that is not. The accepted
+prefix is exactly the set of commits whose `Sync` returned.
 
-Three cases at the boundary, all handled by the same test:
+An erased block 0 is a fresh store: the header is written there and
+synced first. Any other unusable block 0 refuses the open, reporting
+`Bad_Header`, `Bad_Version` or `Wrong_Sizes`.
+
+Three cases at the record boundary, all handled by the same test:
 - block never written (erased): not Valid, stop
 - block torn: CRC fails, not Valid, stop
 - block holds an old valid record from a previous life of the device
@@ -83,7 +101,7 @@ commit order.
 
 `Legder.RAM_Device` keeps a durable copy and a pending copy per block.
 `Write` goes to pending, `Sync` promotes pending to durable.
-`Tear_Next_Write` corrupts the second half of the next block written.
+`Tear_Next_Write` corrupts the front half of the next block written.
 `Drop_Unsynced` discards pending. Together they model exactly the
 fault model the log promises to survive, and nothing more. A real
 device is expected to behave at least this well; if it does not (flash

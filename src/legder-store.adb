@@ -64,7 +64,7 @@ package body Legder.Store with SPARK_Mode is
    -- Open --
    ----------
 
-   procedure Open (S : out Store; Replayed : out Natural) is
+   procedure Open (S : out Store; Replayed : out Natural; Status : out Open_Status) is
       procedure Visit (R : Log_Record);
       procedure Visit (R : Log_Record) is
       begin
@@ -74,8 +74,10 @@ package body Legder.Store with SPARK_Mode is
    begin
       S.Table := [others => <>];
       S.Live := 0;
-      L.Open (S.Log, Replayed);
-      Replay_All (S.Log);
+      L.Open (S.Log, Replayed, Status);
+      if Status = Opened then
+         Replay_All (S.Log);
+      end if;
    end Open;
 
    ---------

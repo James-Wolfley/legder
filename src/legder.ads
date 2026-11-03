@@ -30,6 +30,21 @@ package Legder with SPARK_Mode, Pure is
    type Block_Index is range 0 .. Max_Blocks - 1;
 
    ---------------------------------------------------------------------
+   --  Schema v1 format
+   ---------------------------------------------------------------------
+
+   Magic : constant := 16#4C444752#;
+   --  "LDGR". Serialized little-endian, so the on-disk bytes are
+   --  52 47 44 4C. Records carry no magic of their own.
+
+   subtype Key_Size is Natural range 1 .. 255;
+   subtype Value_Size is Natural range 1 .. 65_535;
+   --  What a header may declare. A record must also fit one block.
+
+   Record_Overhead : constant := 13;
+   --  Kind, sequence, and the trailing CRC.
+
+   ---------------------------------------------------------------------
    --  Keys and values
    ---------------------------------------------------------------------
 
@@ -37,6 +52,16 @@ package Legder with SPARK_Mode, Pure is
    Max_Value : constant := 256;
    --  Together with the record header they fit one block with room
    --  to spare. See Legder.Record_Format for the exact budget.
+
+   function Fits_In_Block (K : Key_Size; V : Value_Size) return Boolean is
+     (K <= Max_Key and then V <= Max_Value
+      and then Record_Overhead + K + V <= Block_Size);
+   --  What this build can store: one block, inside Key and Value.
+
+   type Open_Status is (Opened, Bad_Header, Bad_Version, Wrong_Sizes);
+   --  Why Open refused: block 0 is not a header, it is a schema this
+   --  build does not implement, or its K/V is not the configured one.
+   --  A refused open writes nothing.
 
    subtype Key_Length   is Natural range 0 .. Max_Key;
    subtype Value_Length is Natural range 0 .. Max_Value;
