@@ -6,3 +6,5 @@ config/
 *.o
 *.ali
 gnatprove/
+file-device-test-tmp/
+crash-tmp/

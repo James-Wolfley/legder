@@ -1,0 +1,16 @@
+name = "legder_file_device"
+description = "legder block device backed by a file on a desktop file system"
+version = "0.1.0-dev"
+authors = ["Olivier Henley"]
+maintainers = ["Olivier Henley <henley@adacore.com>"]
+maintainers-logins = ["ohenley"]
+licenses = "Apache-2.0"
+tags = ["storage", "legder", "device"]
+
+project-files = ["legder_file_device.gpr"]
+
+[[depends-on]]
+legder = "*"
+
+[[pins]]
+legder = { path = "../.." }

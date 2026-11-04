@@ -36,6 +36,7 @@ src/legder-record_format.ads  the on-disk record, Encode/Decode with CRC     don
 src/legder-log.ads            generic WAL: Open (recover), Append, Scan      done
 src/legder-store.ads          generic KV store on the log                    done, PLACEHOLDER index
 src/legder-ram_device.ads     in-memory device with crash injection          done
+devices/file/                 file-backed device (milestone 2, desktop)      done
 showcase/                     write, tear a block, recover, check            acceptance test
 tests/                        30 checks incl. CRC vectors and crash cases    extend as you go
 ```

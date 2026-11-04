@@ -1,0 +1,18 @@
+with "legder";
+
+library project Legder_File_Device is
+   for Languages use ("Ada", "C");
+   for Library_Name use "legder_file_device";
+   for Library_Version use "0.1.0";
+   for Library_Kind use "static";
+   for Source_Dirs use ("src");
+   for Object_Dir use "obj";
+   for Library_Dir use "lib";
+   for Create_Missing_Dirs use "True";
+   package Compiler is
+      for Default_Switches ("Ada") use
+        ("-gnat2022", "-gnata", "-gnatwa", "-gnatwe", "-gnatVa",
+         "-gnatyg", "-gnatyM100", "-g", "-O1", "-fstack-check");
+      for Default_Switches ("C") use ("-Wall", "-Wextra", "-Werror", "-g", "-O1");
+   end Compiler;
+end Legder_File_Device;
