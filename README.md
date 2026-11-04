@@ -47,6 +47,9 @@ log only grows, and when the device is full, Put fails.
 
 Read `ARCHITECTURE.md` before touching anything.
 
+See [design documentation](docs/README.md) for the class diagram and its
+editable diagrams.net source.
+
 ## Milestones
 
 1. **Prove the record format.** `Legder.Record_Format` under
