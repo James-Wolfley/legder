@@ -22,6 +22,12 @@ jobs:
           cd showcase
           alr -n build
           alr -n run
+      - name: File device (unit + crash test)
+        run: |
+          cd devices/file/tests
+          alr -n build
+          ./bin/file_device_tests
+          ./crash_test.sh 25
       - name: SPARK flow analysis
         run: |
           alr -n with gnatprove

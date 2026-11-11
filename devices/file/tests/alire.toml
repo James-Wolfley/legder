@@ -1,0 +1,18 @@
+name = "legder_file_device_tests"
+description = "legder file device tests: unit and kill-the-writer crash test"
+version = "0.1.0-dev"
+authors = ["Olivier Henley"]
+maintainers = ["Olivier Henley <henley@adacore.com>"]
+maintainers-logins = ["ohenley"]
+licenses = "Apache-2.0"
+
+executables = ["file_device_tests"]
+project-files = ["legder_file_device_tests.gpr"]
+
+[[depends-on]]
+legder_file_device = "*"
+legder = "*"
+
+[[pins]]
+legder_file_device = { path = ".." }
+legder = { path = "../../.." }
