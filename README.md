@@ -85,7 +85,8 @@ Contracts are checked at runtime in every build (`-gnata`).
 
 ## Rules of the road
 
-- Warnings are errors, style checks on, CI on every push.
+- Warnings are errors, style checks on. Run tests before every push.
+  Do not add CI workflows until further notice.
 - `src/` is SPARK. Devices other than RAM live in `devices/<name>/`
   and are the only place `SPARK_Mode => Off` is allowed.
 - Never write to the table before the log has synced. That is the
