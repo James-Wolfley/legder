@@ -30,11 +30,12 @@ generic
    with procedure Read  (Index : Block_Index; Data : out Block);
    with procedure Write (Index : Block_Index; Data : Block);
    with procedure Sync;
+   Capacity : Positive := 256;
 package Legder.Store with SPARK_Mode is
 
-   Max_Entries : constant := 256;
-   --  Live keys the table can hold. Bounded; a full table refuses new
-   --  keys rather than allocating.
+   Max_Entries : constant Positive := Capacity;
+   --  Live keys the table can hold, fixed at instantiation. Bounded; a
+   --  full table refuses new keys rather than allocating.
 
    type Store is limited private;
 
@@ -45,8 +46,13 @@ package Legder.Store with SPARK_Mode is
      with Pre  => Fits_In_Block (K_Size, V_Size),
           Post => (if Status = Opened then Is_Open (S) else not Is_Open (S));
    --  Recovers from the device. Replayed is the number of committed
-   --  records found and applied. Only Status = Opened leaves a usable
-   --  store.
+   --  records in the validated prefix, even when the capacity check
+   --  refuses. Replay keeps only the last live Put for each key, so it
+   --  accepts any log whose final live set fits Capacity, whatever its
+   --  peak. Only Status = Opened leaves a usable store. Capacity_Exceeded
+   --  means the final live set does not fit; the table is empty, the
+   --  store closed, and the log untouched. Worst case Open takes time
+   --  quadratic in Replayed and uses O (Capacity) space.
 
    procedure Unload (S : in out Store)
      with Post => not Is_Open (S);
@@ -81,7 +87,7 @@ private
       V    : Value;
    end record;
 
-   type Entry_Index is range 1 .. Max_Entries;
+   subtype Entry_Index is Positive range 1 .. Capacity;
    type Entry_Array is array (Entry_Index) of Entry_Rec;
 
    package L is new Legder.Log (K_Size, V_Size, Block_Count, Read, Write, Sync);

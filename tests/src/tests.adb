@@ -22,6 +22,9 @@ procedure Tests is
      (K_Bytes, V_Bytes, Dev.Block_Count, Dev.Read, Dev.Write, Dev.Sync);
    package KV is new Legder.Store
      (K_Bytes, V_Bytes, Dev.Block_Count, Dev.Read, Dev.Write, Dev.Sync);
+   package Small is new Legder.Store
+     (K_Bytes, V_Bytes, Dev.Block_Count, Dev.Read, Dev.Write, Dev.Sync,
+      Capacity => 2);
 
    Failures : Natural := 0;
 
@@ -418,6 +421,105 @@ procedure Tests is
              not OK and KV.Count (S) = 255 and Dev.Writes = W);
    end Test_Capacity;
 
+   procedure Test_Small_Capacity is
+      S     : Small.Store;
+      N     : Natural;
+      St    : Open_Status;
+      OK    : Boolean;
+      Got   : Value;
+      Found : Boolean;
+      W     : Natural;
+   begin
+      Dev.Erase;
+      Small.Open (S, N, St);
+      Small.Put (S, K ("a"), V ("1"), OK);
+      Small.Put (S, K ("b"), V ("2"), OK);
+      W := Dev.Writes;
+      Small.Put (S, K ("c"), V ("3"), OK);
+      Check ("small capacity refuses a new key before writing",
+             St = Opened and not OK and Small.Count (S) = 2
+             and Dev.Writes = W);
+
+      Small.Put (S, K ("a"), V ("9"), OK);
+      Small.Get (S, K ("a"), Got, Found);
+      Check ("full store still updates an existing key",
+             OK and Found and Same (Got, V ("9")) and Small.Count (S) = 2);
+
+      Small.Delete (S, K ("b"), OK);
+      Small.Put (S, K ("c"), V ("3"), OK);
+      Small.Get (S, K ("c"), Got, Found);
+      Check ("deleted slot is reused",
+             OK and Found and Same (Got, V ("3")) and Small.Count (S) = 2);
+   end Test_Small_Capacity;
+
+   procedure Test_Replay_Capacity is
+      S     : Small.Store;
+      Lg    : KV.Store;
+      N     : Natural;
+      St    : Open_Status;
+      OK    : Boolean;
+      Got   : Value;
+      Found : Boolean;
+      W     : Natural;
+      Wrote : Boolean := True;
+      Exact : Boolean;
+   begin
+      Dev.Erase;
+      KV.Open (Lg, N, St);
+
+      --  Peak of three live keys, but the last operation for b is Delete and
+      --  a is overwritten: the final live set is exactly Capacity.
+      KV.Put (Lg, K ("a"), V ("1"), OK);
+      Wrote := Wrote and OK;
+      KV.Put (Lg, K ("b"), V ("2"), OK);
+      Wrote := Wrote and OK;
+      KV.Put (Lg, K ("c"), V ("3"), OK);
+      Wrote := Wrote and OK;
+      KV.Put (Lg, K ("a"), V ("9"), OK);
+      Wrote := Wrote and OK;
+      KV.Delete (Lg, K ("b"), OK);
+      Wrote := Wrote and OK;
+
+      Small.Open (S, N, St);
+      Small.Get (S, K ("a"), Got, Found);
+      Exact := Found and then Same (Got, V ("9"));
+      Small.Get (S, K ("b"), Got, Found);
+      Exact := Exact and then not Found;
+      Small.Get (S, K ("c"), Got, Found);
+      Check ("replay fits final state, not peak, at exact capacity",
+             Wrote and St = Opened and N = 5 and Small.Is_Open (S)
+             and Small.Count (S) = 2 and Exact and Found);
+
+      KV.Put (Lg, K ("d"), V ("4"), OK);
+      W := Dev.Writes;
+      Small.Open (S, N, St);
+      Small.Get (S, K ("a"), Got, Found);
+      Check ("final live set above capacity refuses with no writes",
+             OK and St = Capacity_Exceeded and N = 6
+             and not Small.Is_Open (S) and Small.Count (S) = 0
+             and not Found and Dev.Writes = W);
+
+      --  Erased header with surviving records: refusal must still not
+      --  provision the header.
+      Dev.Write (0, [others => 16#FF#]);
+      Dev.Sync;
+      W := Dev.Writes;
+      Small.Open (S, N, St);
+      Check ("refusal after erased header writes nothing",
+             St = Capacity_Exceeded and N = 6 and not Small.Is_Open (S)
+             and Dev.Writes = W);
+
+      KV.Open (Lg, N, St);
+      KV.Get (Lg, K ("a"), Got, Found);
+      Exact := Found and then Same (Got, V ("9"));
+      KV.Get (Lg, K ("b"), Got, Found);
+      Exact := Exact and then not Found;
+      KV.Get (Lg, K ("d"), Got, Found);
+      Check ("larger capacity reopens the same log",
+             St = Opened and N = 6 and Exact and Found
+             and KV.Count (Lg) = 3);
+   end Test_Replay_Capacity;
+
 begin
    Test_CRC;
    Test_Header;
@@ -427,6 +529,8 @@ begin
    Test_Unload;
    Test_Lengths;
    Test_Capacity;
+   Test_Small_Capacity;
+   Test_Replay_Capacity;
    New_Line;
    if Failures = 0 then
       Put_Line ("all tests passed");

@@ -58,9 +58,11 @@ package Legder with SPARK_Mode, Pure is
       and then Record_Overhead + K + V <= Block_Size);
    --  What this build can store: one block, inside Key and Value.
 
-   type Open_Status is (Opened, Bad_Header, Bad_Version, Wrong_Sizes);
+   type Open_Status is
+     (Opened, Bad_Header, Bad_Version, Wrong_Sizes, Capacity_Exceeded);
    --  Why Open refused: block 0 is not a header, it is a schema this
-   --  build does not implement, or its K/V is not the configured one.
+   --  build does not implement, its K/V is not the configured one, or
+   --  the final live key set after replay exceeds the store's capacity.
    --  A refused open writes nothing.
 
    subtype Key_Length   is Natural range 0 .. Max_Key;

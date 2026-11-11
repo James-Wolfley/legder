@@ -29,9 +29,8 @@ package body Legder.Store with SPARK_Mode is
       return 0;
    end Free_Slot;
 
-   --  Apply one record to the table. Used by Open (replay) and by
-   --  Put/Delete (after commit). One code path, so replay and live
-   --  updates cannot drift apart.
+   --  Apply one record to the table. Used by Put and Delete after commit;
+   --  replay builds the final state separately.
    procedure Apply (T : in out Entry_Array; Live : in out Natural; R : Log_Record) is
       I : constant Natural := Find (T, R.K);
    begin
@@ -47,9 +46,6 @@ package body Legder.Store with SPARK_Mode is
                      T (Entry_Index (F)) := (Live => True, K => R.K, V => R.V);
                      Live := Live + 1;
                   end if;
-                  --  F = 0: table full during replay. Cannot happen if
-                  --  Put refused the key when it was first written (S3),
-                  --  unless Max_Entries shrank between runs.
                end;
             end if;
          when Delete =>
@@ -71,18 +67,52 @@ package body Legder.Store with SPARK_Mode is
    ----------
 
    procedure Open (S : out Store; Replayed : out Natural; Status : out Open_Status) is
+      Exceeded : Boolean := False;
+
       procedure Visit (R : Log_Record);
       procedure Visit (R : Log_Record) is
       begin
-         Apply (S.Table, S.Live, R);
+         if R.Kind = Put and then not Exceeded then
+            declare
+               Superseded : Boolean := False;
+               procedure Check (Later : Log_Record);
+               procedure Check (Later : Log_Record) is
+               begin
+                  if Later.Seq > R.Seq and then Later.K = R.K then
+                     Superseded := True;
+                  end if;
+               end Check;
+               procedure Scan_All is new L.Scan (Check);
+            begin
+               Scan_All (S.Log);
+               if not Superseded then
+                  if S.Live = Capacity then
+                     Exceeded := True;
+                  else
+                     S.Live := S.Live + 1;
+                     S.Table (Entry_Index (S.Live)) :=
+                       (Live => True, K => R.K, V => R.V);
+                  end if;
+               end if;
+            end;
+         end if;
       end Visit;
-      procedure Replay_All is new L.Scan (Visit);
+      procedure Replay_Final is new L.Scan (Visit);
    begin
       S.Table := [others => <>];
       S.Live := 0;
-      L.Open (S.Log, Replayed, Status);
+      L.Open (S.Log, Replayed, Status, Initialize_Header => False);
       if Status = Opened then
-         Replay_All (S.Log);
+         Replay_Final (S.Log);
+         if Exceeded then
+            S.Table := [others => <>];
+            S.Live := 0;
+            S.Log.Opened := False;
+            Status := Capacity_Exceeded;
+         else
+            --  Provision an erased header only after capacity fits.
+            L.Open (S.Log, Replayed, Status);
+         end if;
       end if;
    end Open;
 
