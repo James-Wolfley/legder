@@ -12,14 +12,12 @@
 --
 --  The file is the device image: blocks 0 .. Block_Count, 512 bytes
 --  each, at offset Index * Block_Size. A new file is created at full
---  size and filled with 16#FF#, like erased flash, and made durable
---  (file and directory) before Open returns.
+--  size and filled with 16#FF#, like erased flash, and flushed before
+--  Open returns.
 --
 --  Fault model, as README.md requires of a legder device:
 --    * Sync returns only after the operating system reports every
---      earlier Write durable: fsync on Linux, F_FULLFSYNC on macOS
---      (plain fsync there does not flush the drive cache), _commit on
---      Windows.
+--      earlier Write durable: fsync on Linux, _commit on Windows.
 --    * A block write that is cut short leaves one torn block, which
 --      the record CRC rejects. Nothing else is overwritten.
 --    * Writes after the last Sync may be lost. The log never relies
@@ -27,18 +25,18 @@
 --
 --  Errors are fail-stop. The device formals have no status out
 --  parameter, and a Write or Sync that failed must never look like a
---  commit, so Read, Write and Sync raise Device_Error instead. The
---  store applies a record to its table only after Append returns, so
---  an exception leaves the table matching the log. After an error the
---  device refuses all I/O until it is closed and reopened, because
---  after a failed fsync the kernel may already have dropped the dirty
---  pages: retrying Sync could report success for data that is gone.
+--  commit, so Read, Write and Sync raise Device_Error instead. After an
+--  error the device refuses all I/O until it is closed and reopened,
+--  because after a failed fsync the kernel may already have dropped the
+--  dirty pages: retrying Sync could report success for data that is gone.
+--  A Store over this device does not recover by itself: discard it,
+--  close the device, reopen both and let replay recover the log.
 --
 --  One writer: Open takes an exclusive, non-blocking lock on the file,
 --  so a second process (or a second instance in this one) gets Locked.
 --
---  This package is outside SPARK: it is the only place, with its C
---  shim, that touches the operating system.
+--  This package is outside SPARK: with Legder.File_Device_OS it is the
+--  only place that touches the operating system.
 
 generic
    Last_Block : Block_Index;
@@ -58,7 +56,8 @@ package Legder.File_Device with SPARK_Mode => Off is
       Too_Large,     --  bigger than this Block_Count; would lose blocks
       Foreign,       --  block 0 is neither erased nor a legder header
       IO_Failed);    --  read, extend or sync failed while opening
-   --  Every result other than Ok leaves the device closed. Only a
+   --  Every result other than Ok leaves the device closed, except
+   --  Already_Open, which leaves the open device untouched. Only a
    --  missing or short file is ever written by Open.
 
    Device_Error : exception;
@@ -75,7 +74,9 @@ package Legder.File_Device with SPARK_Mode => Off is
    --  being created) is extended with 16#FF#, which reads as erased or,
    --  inside a partial block, as torn. A file whose block 0 is neither
    --  erased nor a valid legder header is refused as Foreign, untouched.
-   --  On Ok the file is locked and every block is durable.
+   --  On Ok the file is locked and everything this call wrote is
+   --  durable. Linux also confirms the containing directory entry;
+   --  Windows leaves that entry to the file system's journal.
 
    procedure Close;
    --  Releases the file and the lock. No Sync: anything not synced may
