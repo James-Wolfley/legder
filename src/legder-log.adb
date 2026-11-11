@@ -6,7 +6,10 @@ package body Legder.Log with SPARK_Mode is
    -- Open --
    ----------
 
-   procedure Open (S : out State; Recovered : out Natural; Status : out Open_Status) is
+   procedure Open
+     (S : out State; Recovered : out Natural; Status : out Open_Status;
+      Initialize_Header : Boolean := True)
+   is
       B     : Block;
       H     : Header.Header;
       HS    : Header.Status;
@@ -20,12 +23,14 @@ package body Legder.Log with SPARK_Mode is
 
       Read (0, B);
       if (for all I in Block_Offset => B (I) = 16#FF#) then
-         --  Erased block 0: a fresh store. The header becomes durable
-         --  before any record can follow it.
-         Header.Encode
-           ((Version => Current_Version, K => K_Size, V => V_Size), B);
-         Write (0, B);
-         Sync;
+         --  Erased block 0: a fresh store. When initializing, the header
+         --  becomes durable before any record can follow it.
+         if Initialize_Header then
+            Header.Encode
+              ((Version => Current_Version, K => K_Size, V => V_Size), B);
+            Write (0, B);
+            Sync;
+         end if;
       else
          Header.Decode (B, H, HS);
          if HS /= Ok then

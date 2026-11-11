@@ -47,13 +47,17 @@ package Legder.Log with SPARK_Mode is
    function Is_Full (S : State) return Boolean is
      (S.Head > Natural (Block_Count));
 
-   procedure Open (S : out State; Recovered : out Natural; Status : out Open_Status)
+   procedure Open
+     (S : out State; Recovered : out Natural; Status : out Open_Status;
+      Initialize_Header : Boolean := True)
      with Pre  => Fits_In_Block (K_Size, V_Size),
           Post => (if Status = Opened then S.Opened else not S.Opened);
    --  Reads block 0, then scans blocks 1 .. until the first gap, setting
    --  Head and Last_Seq. Writes the header on an erased device; refuses
    --  on any other unusable one, writing nothing. Recovered is the
-   --  number of valid records found.
+   --  number of valid records found. With Initialize_Header False an
+   --  erased block 0 is accepted without being written; the caller must
+   --  initialize the header before Append.
 
    procedure Append (S : in out State; Kind : Op_Kind; K : Key; V : Value; Success : out Boolean)
      with Pre  => S.Opened
