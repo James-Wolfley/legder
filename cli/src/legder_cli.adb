@@ -16,6 +16,7 @@ procedure Legder_CLI is
    use Ada.Strings.Fixed;
    use Ada.Characters.Handling;
    use type Legder.Open_Status;
+   use type Legder.Byte;
 
    Key_Bytes   : constant Legder.Key_Size := 32;
    Value_Bytes : constant Legder.Value_Size := 64;
