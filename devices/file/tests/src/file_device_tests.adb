@@ -1,6 +1,6 @@
 --  Tests for Legder.File_Device. Plain Ada, no framework.
 --
---    file_device_tests [DIR]          unit tests, files under DIR
+--    file_device_tests [PARENT]       unit tests in a fresh child of PARENT
 --    file_device_tests write PATH     commit Puts forever, print "ack N"
 --    file_device_tests check PATH N   reopen after a kill: N acked
 --
@@ -167,11 +167,6 @@ procedure File_Device_Tests is
       end Write_Past_End;
 
    begin
-      if Ada.Directories.Exists (Dir) then
-         Ada.Directories.Delete_Tree (Dir);
-      end if;
-      Ada.Directories.Create_Path (Dir);
-
       Put_Line ("-- fresh file");
       Dev.Open (Path, R);
       Check ("new file opens", R = Dev.Ok);
@@ -304,6 +299,10 @@ procedure File_Device_Tests is
       Check ("a missing directory is Cannot_Open", R = Dev.Cannot_Open);
 
       Ada.Directories.Delete_Tree (Dir);
+   exception
+      when others =>
+         Ada.Directories.Delete_Tree (Dir);
+         raise;
    end Unit;
 
    ---------------------------------------------------------------------
@@ -393,7 +392,35 @@ begin
    elsif Argument_Count >= 3 and then Argument (1) = "check" then
       Checker (Argument (2), Natural'Value (Argument (3)));
    else
-      Unit (if Argument_Count >= 1 then Argument (1) else "file-device-test-tmp");
+      declare
+         Parent : constant String := (if Argument_Count >= 1 then Argument (1) else ".");
+         I      : Natural := 1;
+      begin
+         Ada.Directories.Create_Path (Parent);
+         loop
+            declare
+               Name : constant String :=
+                 Ada.Directories.Compose
+                   (Parent, "file-device-test-" & Trim (Natural'Image (I)));
+               Made : Boolean := False;
+            begin
+               begin
+                  Ada.Directories.Create_Directory (Name);
+                  Made := True;
+               exception
+                  when Ada.Directories.Use_Error =>
+                     if not Ada.Directories.Exists (Name) then
+                        raise;
+                     end if;
+               end;
+               if Made then
+                  Unit (Name);
+                  exit;
+               end if;
+            end;
+            I := I + 1;
+         end loop;
+      end;
       if Failures = 0 then
          Put_Line ("all file device tests passed");
       else

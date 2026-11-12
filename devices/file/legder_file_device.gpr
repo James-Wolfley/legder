@@ -1,18 +1,36 @@
 with "legder";
+with "config/legder_file_device_config.gpr";
+
+--  LEGDER_OS selects the platform body: -XLEGDER_OS=linux, or
+--  -XLEGDER_OS=windows. Any other value selects a body that fails to
+--  compile, so an unsupported target cannot build here.
 
 library project Legder_File_Device is
-   for Languages use ("Ada", "C");
+   type Target_Kind is
+     ("linux", "windows", "unsupported", "darwin", "macos");
+   Legder_OS : Target_Kind :=
+     External ("LEGDER_OS", Legder_File_Device_Config.Alire_Host_OS);
+
+   for Languages use ("Ada");
    for Library_Name use "legder_file_device";
    for Library_Version use "0.1.0";
    for Library_Kind use "static";
-   for Source_Dirs use ("src");
-   for Object_Dir use "obj";
+   for Object_Dir use "obj/" & Legder_OS;
    for Library_Dir use "lib";
    for Create_Missing_Dirs use "True";
+
+   case Legder_OS is
+      when "linux" =>
+         for Source_Dirs use ("src", "src/linux");
+      when "windows" =>
+         for Source_Dirs use ("src", "src/windows");
+      when others =>
+         for Source_Dirs use ("src", "src/unsupported");
+   end case;
+
    package Compiler is
       for Default_Switches ("Ada") use
         ("-gnat2022", "-gnata", "-gnatwa", "-gnatwe", "-gnatVa",
          "-gnatyg", "-gnatyM100", "-g", "-O1", "-fstack-check");
-      for Default_Switches ("C") use ("-Wall", "-Wextra", "-Werror", "-g", "-O1");
    end Compiler;
 end Legder_File_Device;
