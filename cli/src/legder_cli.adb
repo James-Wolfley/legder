@@ -1,6 +1,3 @@
---  Legder interactive CLI.
---  File-backed testing interface for the transactional store.
---  Keys and values are fixed-size and zero-padded.
 
 with Ada.Text_IO;
 with Ada.Strings;
@@ -10,6 +7,7 @@ with Ada.Exceptions;
 with Legder;
 with Legder.Store;
 with Legder.File_Device;
+with Legder.RAM_Device;
 
 procedure Legder_CLI is
    use Ada.Text_IO;
@@ -21,302 +19,353 @@ procedure Legder_CLI is
    Key_Bytes   : constant Legder.Key_Size := 32;
    Value_Bytes : constant Legder.Value_Size := 64;
 
-   --  Instantiate one file-backed device and one store.
-   package Dev is new Legder.File_Device
-     (Last_Block => 255);
+   package File_Dev is new Legder.File_Device (Last_Block => 255);
+   use type File_Dev.Open_Result;
 
-   use type Dev.Open_Result;
+   package File_KV is new Legder.Store
+     (K_Size => Key_Bytes, V_Size => Value_Bytes,
+      Block_Count => File_Dev.Block_Count,
+      Read => File_Dev.Read, Write => File_Dev.Write,
+      Sync => File_Dev.Sync, Capacity => 128);
 
-   package KV is new Legder.Store
-     (K_Size      => Key_Bytes,
-      V_Size      => Value_Bytes,
-      Block_Count => Dev.Block_Count,
-      Read        => Dev.Read,
-      Write       => Dev.Write,
-      Sync        => Dev.Sync,
-      Capacity    => 128);
+   package RAM_KV is new Legder.Store
+     (K_Size => Key_Bytes, V_Size => Value_Bytes,
+      Block_Count => Legder.RAM_Device.Block_Count,
+      Read => Legder.RAM_Device.Read,
+      Write => Legder.RAM_Device.Write,
+      Sync => Legder.RAM_Device.Sync, Capacity => 128);
 
-   DB       : KV.Store;
-   Loaded   : Boolean := False;
-   Path     : String (1 .. 512) := (others => ' ');
+   type Device_Kind is (None, File_Backend, RAM_Backend);
+   Active : Device_Kind := None;
+   File_DB : File_KV.Store;
+   RAM_DB  : RAM_KV.Store;
+   Path : String (1 .. 512) := [others => ' '];
    Path_Len : Natural := 0;
 
-   --  Convert a text key into the fixed-size store format.
-   function Make_Key (Text : String) return Legder.Key is
-      Result : Legder.Key;
+   function Make_Key (S : String) return Legder.Key is
+      K : Legder.Key;
    begin
-      Result.Length := Key_Bytes;
-
-      for I in Text'Range loop
-         Result.Bytes (I - Text'First + 1) :=
-           Legder.Byte (Character'Pos (Text (I)));
+      K.Length := Key_Bytes;
+      for I in S'Range loop
+         K.Bytes (I - S'First + 1) :=
+           Legder.Byte (Character'Pos (S (I)));
       end loop;
-
-      return Result;
+      return K;
    end Make_Key;
 
-   --  Convert a text value into the fixed-size store format.
-   function Make_Value (Text : String) return Legder.Value is
-      Result : Legder.Value;
+   function Make_Value (S : String) return Legder.Value is
+      V : Legder.Value;
    begin
-      Result.Length := Value_Bytes;
-
-      for I in Text'Range loop
-         Result.Bytes (I - Text'First + 1) :=
-           Legder.Byte (Character'Pos (Text (I)));
+      V.Length := Value_Bytes;
+      for I in S'Range loop
+         V.Bytes (I - S'First + 1) :=
+           Legder.Byte (Character'Pos (S (I)));
       end loop;
-
-      return Result;
+      return V;
    end Make_Value;
 
-   --  Decode until the first zero-padding byte.
    function Value_Text (V : Legder.Value) return String is
-      Last : Natural := 0;
+      N : Natural := 0;
    begin
       for I in 1 .. Natural (Value_Bytes) loop
          exit when V.Bytes (I) = 0;
-         Last := I;
+         N := I;
       end loop;
-
       declare
-         Result : String (1 .. Last);
+         S : String (1 .. N);
       begin
-         for I in Result'Range loop
-            Result (I) :=
-              Character'Val (Integer (V.Bytes (I)));
+         for I in S'Range loop
+            S (I) := Character'Val (Integer (V.Bytes (I)));
          end loop;
-         return Result;
+         return S;
       end;
    end Value_Text;
 
-   --  Release the store before closing the device.
    procedure Unload is
    begin
-      if Loaded then
-         KV.Unload (DB);
-         Loaded := False;
-      end if;
-
-      Dev.Close;
+      case Active is
+         when File_Backend =>
+            File_KV.Unload (File_DB);
+            File_Dev.Close;
+         when RAM_Backend =>
+            RAM_KV.Unload (RAM_DB);
+         when None =>
+            null;
+      end case;
+      Active := None;
    end Unload;
 
-   --  Open a file and recover committed records.
-   procedure Open_Database (File_Name : String) is
-      Result   : Dev.Open_Result;
-      Status   : Legder.Open_Status;
+   procedure Open_File (Name : String) is
+      Result : File_Dev.Open_Result;
+      Status : Legder.Open_Status;
       Replayed : Natural;
    begin
-      if File_Name'Length = 0
-        or else File_Name'Length > Path'Length
-      then
-         Put_Line ("Invalid database path.");
+      if Name'Length = 0 or else Name'Length > Path'Length then
+         Put_Line ("Invalid file path.");
          return;
       end if;
-
       Unload;
-
-      Dev.Open (File_Name, Result);
-
-      if Result /= Dev.Ok then
+      File_Dev.Open (Name, Result);
+      if Result /= File_Dev.Ok then
          Put_Line ("Device error: " & Result'Image);
          return;
       end if;
-
-      KV.Open (DB, Replayed, Status);
-
-      if Status = Legder.Opened then
-         Loaded := True;
-
-         Path := (others => ' ');
-         Path (1 .. File_Name'Length) := File_Name;
-         Path_Len := File_Name'Length;
-
-         Put_Line ("Database opened successfully.");
-         Put_Line ("Records replayed:" & Replayed'Image);
-      else
+      File_KV.Open (File_DB, Replayed, Status);
+      if Status /= Legder.Opened then
          Put_Line ("Store error: " & Status'Image);
-         Dev.Close;
+         File_Dev.Close;
+         return;
       end if;
-   end Open_Database;
+      Active := File_Backend;
+      Path := [others => ' '];
+      Path (1 .. Name'Length) := Name;
+      Path_Len := Name'Length;
+      Put_Line
+        ("File store opened. Records replayed:" & Replayed'Image);
+   end Open_File;
 
-   --  Print supported commands.
-   procedure Show_Help is
+   procedure Open_RAM is
+      Status : Legder.Open_Status;
+      Replayed : Natural;
    begin
-      Put_Line ("");
-      Put_Line ("Legder CLI");
-      Put_Line ("-------------------------------");
-      Put_Line ("open <file>       Open/create database");
-      Put_Line ("put <key> <value> Store a value");
-      Put_Line ("get <key>         Retrieve a value");
-      Put_Line ("delete <key>      Delete a key");
-      Put_Line ("count             Count live keys");
-      Put_Line ("reopen            Reload from disk");
-      Put_Line ("unload            Close database");
-      Put_Line ("status            Show store status");
-      Put_Line ("help              Show commands");
-      Put_Line ("exit              Quit");
-      Put_Line ("");
-      Put_Line ("Maximum key length: 32 bytes");
-      Put_Line ("Maximum value length: 64 bytes");
-      Put_Line ("Values may contain spaces.");
-      Put_Line ("");
-   end Show_Help;
+      Unload;
+      --  Preserve RAM blocks so reopening replays the log.
+      RAM_KV.Open (RAM_DB, Replayed, Status);
+      if Status = Legder.Opened then
+         Active := RAM_Backend;
+         Put_Line
+           ("RAM store opened. Records replayed:" & Replayed'Image);
+      else
+         Put_Line ("RAM store error: " & Status'Image);
+      end if;
+   end Open_RAM;
 
-   --  Execute one command entered by the user.
+   procedure Store_Put
+     (K : Legder.Key; V : Legder.Value; OK : out Boolean)
+   is
+   begin
+      case Active is
+         when File_Backend =>
+            File_KV.Put (File_DB, K, V, OK);
+         when RAM_Backend =>
+            RAM_KV.Put (RAM_DB, K, V, OK);
+         when None =>
+            OK := False;
+      end case;
+   end Store_Put;
+
+   procedure Store_Get
+     (K : Legder.Key; V : out Legder.Value; Found : out Boolean)
+   is
+   begin
+      case Active is
+         when File_Backend =>
+            File_KV.Get (File_DB, K, V, Found);
+         when RAM_Backend =>
+            RAM_KV.Get (RAM_DB, K, V, Found);
+         when None =>
+            V := (others => <>);
+            Found := False;
+      end case;
+   end Store_Get;
+
+   procedure Store_Delete
+     (K : Legder.Key; OK : out Boolean)
+   is
+   begin
+      case Active is
+         when File_Backend =>
+            File_KV.Delete (File_DB, K, OK);
+         when RAM_Backend =>
+            RAM_KV.Delete (RAM_DB, K, OK);
+         when None =>
+            OK := False;
+      end case;
+   end Store_Delete;
+
+   function Store_Count return Natural is
+   begin
+      case Active is
+         when File_Backend =>
+            return File_KV.Count (File_DB);
+         when RAM_Backend =>
+            return RAM_KV.Count (RAM_DB);
+         when None =>
+            return 0;
+      end case;
+   end Store_Count;
+
+   procedure Help is
+   begin
+      Put_Line ("open file <path>   Open/create file store");
+      Put_Line ("open <path>        File store (legacy syntax)");
+      Put_Line ("open ram           Open in-memory store");
+      Put_Line ("put <key> <value>  Write a value");
+      Put_Line ("get <key>          Read a value");
+      Put_Line ("delete <key>       Delete a key");
+      Put_Line ("count              Count live keys");
+      Put_Line ("reopen             Unload/replay active store");
+      Put_Line ("unload             Unload active store");
+      Put_Line ("status             Display active device");
+      Put_Line ("ram erase          Erase RAM store (RAM only)");
+      Put_Line ("help | exit");
+      Put_Line ("Keys: 1-32 bytes; values: 1-64 bytes.");
+   end Help;
+
    procedure Execute (Line : String) is
-      Separator : constant Natural := Index (Line, " ");
-
-      Command : constant String :=
-        To_Lower
-          (if Separator = 0 then Line
-           else Line (Line'First .. Separator - 1));
-
+      Space_1 : constant Natural := Index (Line, " ");
+      Cmd : constant String := To_Lower
+        (if Space_1 = 0 then Line
+         else Line (Line'First .. Space_1 - 1));
       Args : constant String :=
-        (if Separator = 0 then ""
+        (if Space_1 = 0 then ""
          else Trim
-           (Line (Separator + 1 .. Line'Last),
+           (Line (Space_1 + 1 .. Line'Last),
             Ada.Strings.Both));
-
-      Second : constant Natural := Index (Args, " ");
-
-      Success : Boolean;
-      Found   : Boolean;
-      V       : Legder.Value;
+      Space_2 : constant Natural := Index (Args, " ");
+      OK, Found : Boolean;
+      V : Legder.Value;
    begin
-      if Command = "help" then
-         Show_Help;
+      if Cmd = "help" then
+         Help;
 
-      elsif Command = "open" then
-         if Args'Length = 0 then
-            Put_Line ("Usage: open <file>");
+      elsif Cmd = "open" then
+         if To_Lower (Args) = "ram" then
+            Open_RAM;
+         elsif Args'Length >= 5
+           and then To_Lower
+             (Args (Args'First .. Args'First + 4)) = "file "
+         then
+            Open_File
+              (Trim
+                (Args (Args'First + 5 .. Args'Last),
+                 Ada.Strings.Both));
+         elsif Args'Length > 0 then
+            Open_File (Args);
          else
-            Open_Database (Args);
+            Put_Line ("Usage: open ram | open file <path>");
          end if;
 
-      elsif Command = "unload" then
+      elsif Cmd = "unload" then
          Unload;
-         Put_Line ("Database unloaded.");
+         Put_Line ("Store unloaded.");
 
-      elsif Command = "reopen" then
-         if Path_Len = 0 then
-            Put_Line ("No previous database.");
+      elsif Cmd = "reopen" then
+         case Active is
+            when RAM_Backend =>
+               Open_RAM;
+            when File_Backend =>
+               declare
+                  Saved : constant String := Path (1 .. Path_Len);
+               begin
+                  Open_File (Saved);
+               end;
+            when None =>
+               Put_Line ("No active store to reopen.");
+         end case;
+
+      elsif Cmd = "ram" and then To_Lower (Args) = "erase" then
+         if Active = RAM_Backend then
+            Unload;
+            Legder.RAM_Device.Erase;
+            Open_RAM;
+            Put_Line ("RAM store erased.");
          else
-            declare
-               Saved : constant String :=
-                 Path (1 .. Path_Len);
-            begin
-               Open_Database (Saved);
-            end;
+            Put_Line ("Open the RAM store first.");
          end if;
 
-      elsif Command = "status" then
-         Put_Line
-           ("Device open: " & Boolean'Image (Dev.Is_Open));
-         Put_Line
-           ("Device failed: " & Boolean'Image (Dev.Has_Failed));
-         Put_Line
-           ("Store loaded: " & Boolean'Image (Loaded));
-
-         if Path_Len > 0 then
-            Put_Line ("File: " & Path (1 .. Path_Len));
-         end if;
-
-         if Loaded then
+      elsif Cmd = "status" then
+         Put_Line ("Device: " & Active'Image);
+         if Active = File_Backend then
+            Put_Line ("Path: " & Path (1 .. Path_Len));
             Put_Line
-              ("Live keys:" & Natural'Image (KV.Count (DB)));
+              ("Device failed: " &
+               Boolean'Image (File_Dev.Has_Failed));
+         elsif Active = RAM_Backend then
+            Put_Line
+              ("RAM writes:" &
+               Natural'Image (Legder.RAM_Device.Writes));
+            Put_Line
+              ("RAM syncs:" &
+               Natural'Image (Legder.RAM_Device.Syncs));
+         end if;
+         if Active /= None then
+            Put_Line ("Live keys:" & Natural'Image (Store_Count));
          end if;
 
-      elsif Command = "count" then
-         if not Loaded then
-            Put_Line ("Open a database first.");
+      elsif Cmd = "count" then
+         if Active = None then
+            Put_Line ("Open a store first.");
          else
-            Put_Line
-              ("Live keys:" & Natural'Image (KV.Count (DB)));
+            Put_Line ("Live keys:" & Natural'Image (Store_Count));
          end if;
 
-      elsif Command = "put" then
-         if not Loaded then
-            Put_Line ("Open a database first.");
-         elsif Second = 0 then
+      elsif Cmd = "put" then
+         if Active = None then
+            Put_Line ("Open a store first.");
+         elsif Space_2 = 0 then
             Put_Line ("Usage: put <key> <value>");
          else
             declare
-               Key_Text : constant String :=
-                 Args (Args'First .. Second - 1);
-
-               Data_Text : constant String :=
+               K : constant String :=
+                 Args (Args'First .. Space_2 - 1);
+               Data : constant String :=
                  Trim
-                   (Args (Second + 1 .. Args'Last),
+                   (Args (Space_2 + 1 .. Args'Last),
                     Ada.Strings.Both);
             begin
-               if Key_Text'Length = 0
-                 or else Key_Text'Length > Natural (Key_Bytes)
-                 or else Data_Text'Length = 0
-                 or else Data_Text'Length > Natural (Value_Bytes)
+               if K'Length = 0
+                 or else K'Length > Natural (Key_Bytes)
+                 or else Data'Length = 0
+                 or else Data'Length > Natural (Value_Bytes)
                then
                   Put_Line ("Invalid key or value length.");
                else
-                  KV.Put
-                    (DB,
-                     Make_Key (Key_Text),
-                     Make_Value (Data_Text),
-                     Success);
-
-                  if Success then
-                     Put_Line ("OK");
-                  else
-                     Put_Line ("Put failed: capacity or log full.");
-                  end if;
+                  Store_Put
+                    (Make_Key (K), Make_Value (Data), OK);
+                  Put_Line
+                    (if OK then "OK"
+                     else "Put failed: capacity or log full.");
                end if;
             end;
          end if;
 
-      elsif Command = "get" or else Command = "delete" then
-         if not Loaded then
-            Put_Line ("Open a database first.");
+      elsif Cmd = "get" or else Cmd = "delete" then
+         if Active = None then
+            Put_Line ("Open a store first.");
          elsif Args'Length = 0
            or else Args'Length > Natural (Key_Bytes)
-           or else Second /= 0
+           or else Space_2 /= 0
          then
-            Put_Line ("Usage: " & Command & " <key>");
-         elsif Command = "get" then
-            KV.Get (DB, Make_Key (Args), V, Found);
-
-            if Found then
-               Put_Line ("Value: " & Value_Text (V));
-            else
-               Put_Line ("Key not found.");
-            end if;
+            Put_Line ("Usage: " & Cmd & " <key>");
+         elsif Cmd = "get" then
+            Store_Get (Make_Key (Args), V, Found);
+            Put_Line
+              (if Found then "Value: " & Value_Text (V)
+               else "Key not found.");
          else
-            KV.Delete (DB, Make_Key (Args), Success);
-
-            if Success then
-               Put_Line ("OK");
-            else
-               Put_Line ("Delete failed.");
-            end if;
+            Store_Delete (Make_Key (Args), OK);
+            Put_Line
+              (if OK then "OK" else "Delete failed.");
          end if;
 
-      elsif Command'Length > 0 then
+      elsif Cmd'Length > 0 then
          Put_Line ("Unknown command. Type help.");
       end if;
    end Execute;
 
 begin
-   Put_Line ("Legder Interactive CLI");
-   Show_Help;
+   Put_Line ("Legder CLI - file and RAM devices");
+   Help;
 
    loop
       Put ("legder> ");
       Flush;
-
       declare
-         Line : constant String := Get_Line;
          Input : constant String :=
-           Trim (Line, Ada.Strings.Both);
+           Trim (Get_Line, Ada.Strings.Both);
       begin
          exit when To_Lower (Input) = "exit";
-
          begin
             Execute (Input);
          exception
@@ -325,6 +374,7 @@ begin
                  ("Command error: " &
                   Ada.Exceptions.Exception_Message (E));
                Unload;
+               Put_Line ("Store unloaded after error.");
          end;
       end;
    end loop;
@@ -335,7 +385,6 @@ begin
 exception
    when End_Error =>
       Unload;
-
    when E : others =>
       Put_Line
         ("Fatal error: " &
