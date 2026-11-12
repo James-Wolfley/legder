@@ -1,7 +1,7 @@
 name = "legder_cli"
 description = "Interactice CLI tool for the Legder transactional storage application."
 version = "0.1.0-dev"
-author = ["Noah Blumenstock"]
+authors = ["Noah Blumenstock"]
 maintainers = ["Legder Capstone Team"]
 licenses = "Apache-2.0"
 
