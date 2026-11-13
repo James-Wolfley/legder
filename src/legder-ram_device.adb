@@ -10,20 +10,24 @@ package body Legder.RAM_Device with SPARK_Mode is
    N_Writes  : Natural := 0;
    N_Syncs   : Natural := 0;
 
-   procedure Read (Index : Block_Index; Data : out Block) is
+   procedure Read (Index : Block_Index; Data : out Block; Result : out Device_Result) is
    begin
       if Index > Block_Count then
          Data := [others => 16#FF#];
+         Result := Failed;
+         return;
       elsif Dirty (Index) then
          Data := Pending (Index);
       else
          Data := Durable (Index);
       end if;
+      Result := Success;
    end Read;
 
-   procedure Write (Index : Block_Index; Data : Block) is
+   procedure Write (Index : Block_Index; Data : Block; Result : out Device_Result) is
    begin
       if Index > Block_Count then
+         Result := Failed;
          return;
       end if;
       N_Writes := N_Writes + 1;
@@ -32,7 +36,6 @@ package body Legder.RAM_Device with SPARK_Mode is
          declare
             Torn : Block := Data;
          begin
-            --  The front half, where every record starts.
             for I in 0 .. Block_Size / 2 - 1 loop
                Torn (I) := Byte ((I * 7 + 13) mod 256);
             end loop;
@@ -42,9 +45,10 @@ package body Legder.RAM_Device with SPARK_Mode is
          Pending (Index) := Data;
       end if;
       Dirty (Index) := True;
+      Result := Success;
    end Write;
 
-   procedure Sync is
+   procedure Sync (Result : out Device_Result) is
    begin
       N_Syncs := N_Syncs + 1;
       for I in Idx loop
@@ -53,6 +57,7 @@ package body Legder.RAM_Device with SPARK_Mode is
             Dirty (I) := False;
          end if;
       end loop;
+      Result := Success;
    end Sync;
 
    procedure Erase is
