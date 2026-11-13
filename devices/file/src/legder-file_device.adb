@@ -7,10 +7,6 @@ package body Legder.File_Device with SPARK_Mode => Off is
 
    package OS renames Legder.File_Device_OS;
 
-   ---------------------------------------------------------------------
-   --  State: one file per instance.
-   ---------------------------------------------------------------------
-
    FD     : File_Descriptor := Invalid_FD;
    Failed : Boolean := False;
 
@@ -28,7 +24,6 @@ package body Legder.File_Device with SPARK_Mode => Off is
    end Fail;
 
    procedure Check_Usable;
-   --  Raises unless the device is open and has not failed.
 
    function Pwrite (Data : Byte_Array; At_Offset : Long_Integer) return Boolean;
    function Pread
@@ -38,10 +33,8 @@ package body Legder.File_Device with SPARK_Mode => Off is
    --  many bytes the file held.
 
    function Sync_Directory (Path : String) return Boolean;
-   --  Makes the directory entry for Path durable.
 
    procedure Abandon (Result : out Open_Result; Why : Open_Result);
-   --  Closes a half-opened file and reports Why.
 
    procedure Check_Usable is
    begin
@@ -107,10 +100,6 @@ package body Legder.File_Device with SPARK_Mode => Off is
       Result := Why;
    end Abandon;
 
-   ----------
-   -- Open --
-   ----------
-
    procedure Open (Path : String; Result : out Open_Result) is
       Length : Long_Integer;
       B0     : Block;
@@ -156,8 +145,6 @@ package body Legder.File_Device with SPARK_Mode => Off is
          return;
       end if;
 
-      --  Never write into a file that is not ours. Block 0 decides:
-      --  erased (missing bytes count as erased) or a legder header.
       if not Pread (B0, 0, Got) then
          Abandon (Result, IO_Failed);
          return;
@@ -177,8 +164,6 @@ package body Legder.File_Device with SPARK_Mode => Off is
          end;
       end if;
 
-      --  Bring a short file to full size, as erased blocks, and make
-      --  that durable before the log can write a header into it.
       if Length < Image_Bytes then
          declare
             Pos : Long_Integer := Length;
@@ -210,10 +195,6 @@ package body Legder.File_Device with SPARK_Mode => Off is
       Result := Ok;
    end Open;
 
-   -----------
-   -- Close --
-   -----------
-
    procedure Close is
    begin
       if FD /= Invalid_FD then
@@ -226,10 +207,6 @@ package body Legder.File_Device with SPARK_Mode => Off is
    function Is_Open return Boolean is (FD /= Invalid_FD);
 
    function Has_Failed return Boolean is (Failed);
-
-   ----------
-   -- Read --
-   ----------
 
    procedure Read (Index : Block_Index; Data : out Block) is
       Got : Natural;
@@ -244,25 +221,16 @@ package body Legder.File_Device with SPARK_Mode => Off is
       end if;
    end Read;
 
-   -----------
-   -- Write --
-   -----------
-
    procedure Write (Index : Block_Index; Data : Block) is
    begin
       Check_Usable;
       if Index > Block_Count then
-         --  Silently dropping it would let a commit look durable.
          raise Device_Error with "write past last block" & Block_Count'Image;
       end if;
       if not Pwrite (Data, Offset (Index)) then
          Fail ("write failed at block" & Index'Image);
       end if;
    end Write;
-
-   ----------
-   -- Sync --
-   ----------
 
    procedure Sync is
    begin
@@ -272,9 +240,37 @@ package body Legder.File_Device with SPARK_Mode => Off is
       end if;
    end Sync;
 
-   -----------
-   -- Erase --
-   -----------
+   procedure Read
+     (Index : Block_Index; Data : out Block; Result : out Device_Result)
+   is
+   begin
+      Read (Index, Data);
+      Result := Success;
+   exception
+      when Device_Error =>
+         Data := [others => 0];
+         Result := Legder.Failed;
+   end Read;
+
+   procedure Write
+     (Index : Block_Index; Data : Block; Result : out Device_Result)
+   is
+   begin
+      Write (Index, Data);
+      Result := Success;
+   exception
+      when Device_Error =>
+         Result := Legder.Failed;
+   end Write;
+
+   procedure Sync (Result : out Device_Result) is
+   begin
+      Sync;
+      Result := Success;
+   exception
+      when Device_Error =>
+         Result := Legder.Failed;
+   end Sync;
 
    procedure Erase is
    begin

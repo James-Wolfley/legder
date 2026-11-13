@@ -1,12 +1,4 @@
 --  Tests for Legder.File_Device. Plain Ada, no framework.
---
---    file_device_tests [PARENT]       unit tests in a fresh child of PARENT
---    file_device_tests write PATH     commit Puts forever, print "ack N"
---    file_device_tests check PATH N   reopen after a kill: N acked
---
---  write and check are the halves of crash_test.sh, which kills the
---  writer at a random moment and checks that what reopens is exactly
---  the acknowledged prefix, give or take the one Put in flight.
 
 with Ada.Command_Line;     use Ada.Command_Line;
 with Ada.Directories;
@@ -57,10 +49,6 @@ procedure File_Device_Tests is
    function Trim (S : String) return String is
      (if S'Length > 0 and then S (S'First) = ' ' then S (S'First + 1 .. S'Last) else S);
 
-   ---------------------------------------------------------------------
-   --  Poking the file behind the device's back
-   ---------------------------------------------------------------------
-
    function Size (Path : String) return Long_Integer is
      (Long_Integer (Ada.Directories.Size (Path)));
 
@@ -92,7 +80,6 @@ procedure File_Device_Tests is
    end Spit;
 
    procedure Tear (Path : String; Index : Block_Index) is
-      --  Front half of the block replaced, as an interrupted write.
       Img : Byte_Array := Slurp (Path);
       At0 : constant Natural := Natural (Index) * Block_Size;
    begin
@@ -117,19 +104,15 @@ procedure File_Device_Tests is
          return True;
    end Raises;
 
-   ---------------------------------------------------------------------
-   --  Unit tests
-   ---------------------------------------------------------------------
-
    procedure Unit (Dir : String) is
-      Path : constant String := Ada.Directories.Compose (Dir, "store.ldgr");
-      R    : Dev.Open_Result;
-      R2   : Dev2.Open_Result;
-      N    : Natural;
-      St   : Open_Status;
-      OK   : Boolean;
-      Got  : Value;
-      Fnd  : Boolean;
+       Path   : constant String := Ada.Directories.Compose (Dir, "store.ldgr");
+       R      : Dev.Open_Result;
+       R2     : Dev2.Open_Result;
+       N      : Natural;
+       St     : Open_Status;
+       Update : Update_Result;
+       Got    : Value;
+       Fnd    : Boolean;
 
       function Has (S : KV.Store; Name, Want : String) return Boolean is
       begin
@@ -155,12 +138,6 @@ procedure File_Device_Tests is
          Dev.Read (0, B);
       end Read_Closed;
 
-      procedure Store_On_Closed is
-         S : KV.Store;
-      begin
-         KV.Open (S, N, St);
-      end Store_On_Closed;
-
       procedure Write_Past_End is
       begin
          Dev.Write (Dev.Block_Count + 1, [others => 0]);
@@ -184,11 +161,11 @@ procedure File_Device_Tests is
                    Img (0) = 16#52# and then Img (1) = 16#47#
                    and then Img (2) = 16#44# and then Img (3) = 16#4C#);
          end;
-         KV.Put (S, K ("a"), V ("1"), OK);
-         KV.Put (S, K ("b"), V ("2"), OK);
-         KV.Put (S, K ("a"), V ("3"), OK);
-         KV.Delete (S, K ("b"), OK);
-         Check ("four commits", OK);
+          KV.Put (S, K ("a"), V ("1"), Update);
+          KV.Put (S, K ("b"), V ("2"), Update);
+          KV.Put (S, K ("a"), V ("3"), Update);
+          KV.Delete (S, K ("b"), Update);
+          Check ("four commits", Update = Applied);
       end;
 
       Put_Line ("-- one writer");
@@ -223,8 +200,8 @@ procedure File_Device_Tests is
          KV.Open (S, N, St);
          Check ("torn delete is dropped", St = Opened and then N = 3);
          Check ("b back to 2", Has (S, "b", "2"));
-         KV.Put (S, K ("c"), V ("4"), OK);
-         Check ("next commit reuses the torn block", OK);
+          KV.Put (S, K ("c"), V ("4"), Update);
+          Check ("next commit reuses the torn block", Update = Applied);
       end;
       Reopen;
       declare
@@ -262,7 +239,13 @@ procedure File_Device_Tests is
       Check ("write past the last block raises", Raises (Write_Past_End'Access));
       Dev.Close;
       Check ("read on a closed device raises", Raises (Read_Closed'Access));
-      Check ("store open on a closed device raises", Raises (Store_On_Closed'Access));
+       declare
+          S : KV.Store;
+       begin
+          KV.Open (S, N, St);
+          Check ("store reports a closed-device failure",
+                 St = Storage_Failure and then N = 0 and then not KV.Is_Open (S));
+       end;
 
       Put_Line ("-- erase");
       Dev.Open (Path, R);
@@ -305,21 +288,17 @@ procedure File_Device_Tests is
          raise;
    end Unit;
 
-   ---------------------------------------------------------------------
-   --  Crash test halves
-   ---------------------------------------------------------------------
-
    Keys : constant := 16;
 
    function Key_Of (I : Positive) return Key is (K ("k" & Trim (Natural'Image (I mod Keys))));
    function Val_Of (I : Positive) return Value is (V (Trim (I'Image)));
 
    procedure Writer (Path : String) is
-      R  : Big.Open_Result;
-      N  : Natural;
-      St : Open_Status;
-      OK : Boolean;
-      S  : KVB.Store;
+       R      : Big.Open_Result;
+       N      : Natural;
+       St     : Open_Status;
+       Update : Update_Result;
+       S      : KVB.Store;
    begin
       Big.Open (Path, R);
       if R /= Big.Ok then
@@ -334,8 +313,13 @@ procedure File_Device_Tests is
          return;
       end if;
       for I in Positive loop
-         KVB.Put (S, Key_Of (I), Val_Of (I), OK);
-         exit when not OK;
+          KVB.Put (S, Key_Of (I), Val_Of (I), Update);
+          exit when Update = No_Space;
+          if Update /= Applied then
+             Put_Line ("update " & Update'Image);
+             Set_Exit_Status (Failure);
+             return;
+          end if;
          Put_Line ("ack" & I'Image);
          Flush;
       end loop;
@@ -363,7 +347,6 @@ procedure File_Device_Tests is
          Set_Exit_Status (Failure);
          return;
       end if;
-      --  The table must be the replay of Puts 1 .. N.
       for J in 0 .. Keys - 1 loop
          declare
             Last : Natural := 0;

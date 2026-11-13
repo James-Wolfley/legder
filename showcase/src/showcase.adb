@@ -1,11 +1,4 @@
 --  The showcase: the acceptance test for the project.
---
---  Writes a few keys, then simulates the two crashes the log is built
---  for (a torn block, and a write that never reached the medium),
---  reopens the store, and checks that exactly the committed records
---  survived. The last sections are the application conversion
---  examples: String to K bytes, Integer to V bytes. Exits non-zero if
---  anything is off.
 
 with Ada.Command_Line;
 with Ada.Text_IO;       use Ada.Text_IO;
@@ -24,8 +17,6 @@ procedure Showcase is
    package KV is new Legder.Store
      (K_Bytes, V_Bytes, Dev.Block_Count, Dev.Read, Dev.Write, Dev.Sync);
 
-   --  Signed 32-bit, two's complement, little-endian: the integer
-   --  example. V is 4, so the codec occupies exactly V bytes.
    subtype Int32 is Interfaces.Integer_32;
 
    use type Interfaces.Integer_32;
@@ -39,13 +30,11 @@ procedure Showcase is
    Int32_Last  : constant Interfaces.Integer_64 :=
      Interfaces.Integer_64 (Int32'Last);
 
-   --  Out-of-range input is refused here, not wrapped.
    function Fits_Int32 (X : Interfaces.Integer_64) return Boolean is
      (X >= Int32_First and then X <= Int32_Last);
 
    function Int_Value (X : Int32) return Value is
       R : Value;
-      --  Two's complement is the signed value mod 2**32.
       U : Interfaces.Unsigned_32 :=
         Interfaces.Unsigned_32 (Interfaces.Integer_64 (X) mod 2 ** 32);
    begin
@@ -71,8 +60,6 @@ procedure Showcase is
       return Int32 (S);
    end Value_Int;
 
-   --  Keys and values are fixed width: zero padded, padding included.
-   --  Overlong input is refused; the store never truncates for you.
    function K (S : String) return Key is
       R : Key;
    begin
@@ -101,7 +88,6 @@ procedure Showcase is
       return R;
    end V;
 
-   --  Drop the zero padding before printing.
    function Img (X : Value) return String is
       Last : Natural := X.Length;
    begin
@@ -140,10 +126,9 @@ procedure Showcase is
       end if;
    end Expect;
 
-   OK : Boolean;
+   Update : Update_Result;
    N  : Natural;
 
-   --  Every open here expects a healthy store and a known replay count.
    procedure Open (S : out KV.Store; Want : Natural) is
       St : Open_Status;
    begin
@@ -164,27 +149,26 @@ begin
    begin
       Open (S, 0);
 
-      --  Longer than K or V is refused, not cut to fit.
       begin
-         KV.Put (S, K ("123456789"), V ("x"), OK);
+         KV.Put (S, K ("123456789"), V ("x"), Update);
          Check ("overlong key refused", False);
       exception
          when Constraint_Error =>
             Check ("overlong key refused", True);
       end;
       begin
-         KV.Put (S, K ("alpha"), V ("12345"), OK);
+         KV.Put (S, K ("alpha"), V ("12345"), Update);
          Check ("overlong value refused", False);
       exception
          when Constraint_Error =>
             Check ("overlong value refused", True);
       end;
 
-      KV.Put (S, K ("alpha"), V ("1"), OK);
-      KV.Put (S, K ("beta"),  V ("2"), OK);
-      KV.Put (S, K ("alpha"), V ("11"), OK);
-      KV.Delete (S, K ("beta"), OK);
-      KV.Put (S, K ("gamma"), V ("3"), OK);
+      KV.Put (S, K ("alpha"), V ("1"), Update);
+      KV.Put (S, K ("beta"),  V ("2"), Update);
+      KV.Put (S, K ("alpha"), V ("11"), Update);
+      KV.Delete (S, K ("beta"), Update);
+      KV.Put (S, K ("gamma"), V ("3"), Update);
       Put_Line ("  wrote 5 records, live keys:" & KV.Count (S)'Image);
    end;
 
@@ -199,8 +183,7 @@ begin
 
       Put_Line ("3. torn write: next block lands half garbage");
       Dev.Tear_Next_Write;
-      KV.Put (S, K ("delta"), V ("4"), OK);
-      --  The store believes delta committed. The medium disagrees.
+      KV.Put (S, K ("delta"), V ("4"), Update);
    end;
 
    Put_Line ("4. reopen after the torn write");
@@ -212,9 +195,9 @@ begin
       Expect (S, "delta", "", Present => False);
 
       Put_Line ("5. write after recovery reuses the torn block");
-      KV.Put (S, K ("epsilon"), V ("5"), OK);
+      KV.Put (S, K ("epsilon"), V ("5"), Update);
       Put_Line ("  writes" & Dev.Writes'Image & " syncs" & Dev.Syncs'Image
-                & " (one sync per commit, plus the header)");
+                & " (one sync per commit and successful open)");
    end;
 
    Put_Line ("6. final reopen");
@@ -232,7 +215,6 @@ begin
    declare
       V4 : Value;
    begin
-      --  Byte order is the format, not the machine.
       V4 := Int_Value (16#12345678#);
       Check ("16#12345678# stored as 78 56 34 12",
              V4.Bytes (1) = 16#78# and then V4.Bytes (2) = 16#56#
@@ -252,7 +234,7 @@ begin
       begin
          Open (S, 0);
          for I in Samples'Range loop
-            KV.Put (S, K ("n" & I'Image), Int_Value (Samples (I)), OK);
+            KV.Put (S, K ("n" & I'Image), Int_Value (Samples (I)), Update);
          end loop;
       end;
 
