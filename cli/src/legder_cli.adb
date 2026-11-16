@@ -109,7 +109,13 @@ procedure Legder_CLI is
          Put_Line ("Device error: " & Result'Image);
          return;
       end if;
-      File_KV.Open (File_DB, Replayed, Status);
+      begin
+         File_KV.Open (File_DB, Replayed, Status);
+      exception
+         when others =>
+            File_Dev.Close;
+            raise;
+      end;
       if Status /= Legder.Opened then
          Put_Line ("Store error: " & Status'Image);
          File_Dev.Close;
@@ -211,6 +217,69 @@ procedure Legder_CLI is
       Put_Line ("Keys: 1-32 bytes; values: 1-64 bytes.");
    end Help;
 
+
+   --  Parse a key, allowing double quotes around keys with spaces.
+   --  Next_Pos points to the first character after the key.
+   function Parse_Key
+     (Args : String; Key_Text : out Ada.Strings.Unbounded.Unbounded_String;
+      Next_Pos : out Natural) return Boolean
+   is
+      use Ada.Strings.Unbounded;
+      First : Natural := Args'First;
+      Last  : Natural;
+   begin
+      Key_Text := Null_Unbounded_String;
+      Next_Pos := Args'Last + 1;
+
+      if Args'Length = 0 then
+         return False;
+      end if;
+
+      while First <= Args'Last and then Args (First) = ' ' loop
+         First := First + 1;
+      end loop;
+
+      if First > Args'Last then
+         return False;
+      end if;
+
+      if Args (First) = '"' then
+         First := First + 1;
+         Last := First;
+
+         while Last <= Args'Last loop
+            exit when Args (Last) = '"';
+            Last := Last + 1;
+         end loop;
+
+         if Last > Args'Last or else Last = First then
+            return False;
+         end if;
+
+         Key_Text := To_Unbounded_String (Args (First .. Last - 1));
+         Next_Pos := Last + 1;
+
+         if Next_Pos <= Args'Last
+           and then Args (Next_Pos) /= ' '
+         then
+            return False;
+         end if;
+      else
+         Last := First;
+
+         while Last <= Args'Last loop
+            exit when Args (Last) = ' ';
+            Last := Last + 1;
+         end loop;
+
+         Key_Text := To_Unbounded_String (Args (First .. Last - 1));
+         Next_Pos := Last;
+      end if;
+
+      return Length (Key_Text) > 0
+        and then Length (Key_Text) <= Natural (Key_Bytes);
+   end Parse_Key;
+
    procedure Execute (Line : String) is
       Space_1 : constant Natural := Index (Line, " ");
       Cmd : constant String := To_Lower
@@ -302,56 +371,77 @@ procedure Legder_CLI is
       elsif Cmd = "put" then
          if Active = None then
             Put_Line ("Open a store first.");
-         elsif Space_2 = 0 then
-            Put_Line ("Usage: put <key> <value>");
          else
             declare
-               K : constant String :=
-                 Args (Args'First .. Space_2 - 1);
-               Data : constant String :=
-                 Trim
-                   (Args (Space_2 + 1 .. Args'Last),
-                    Ada.Strings.Both);
+               use Ada.Strings.Unbounded;
+               Key_Text : Unbounded_String;
+               Next_Pos : Natural;
             begin
-               if K'Length = 0
-                 or else K'Length > Natural (Key_Bytes)
-                 or else Data'Length = 0
-                 or else Data'Length > Natural (Value_Bytes)
-               then
-                  Put_Line ("Invalid key or value length.");
+               if not Parse_Key (Args, Key_Text, Next_Pos) then
+                  Put_Line ("Usage: put <key> <value>");
+               elsif Next_Pos > Args'Last then
+                  Put_Line ("Usage: put <key> <value>");
                else
-                  Store_Put
-                    (Make_Key (K), Make_Value (Data), OK);
-                  Put_Line
-                    (if OK then "OK"
-                     else "Put failed: capacity or log full.");
+                  declare
+                     Data : constant String :=
+                       Trim (Args (Next_Pos .. Args'Last),
+                             Ada.Strings.Both);
+                  begin
+                     if Data'Length = 0
+                       or else Data'Length > Natural (Value_Bytes)
+                     then
+                        Put_Line ("Invalid value length.");
+                     else
+                        Store_Put
+                          (Make_Key (To_String (Key_Text)),
+                           Make_Value (Data), OK);
+                        Put_Line
+                          (if OK then "OK"
+                           else "Put failed: capacity or log full.");
+                     end if;
+                  end;
                end if;
             end;
          end if;
 
+
       elsif Cmd = "get" or else Cmd = "delete" then
          if Active = None then
             Put_Line ("Open a store first.");
-         elsif Args'Length = 0
-           or else Args'Length > Natural (Key_Bytes)
-           or else Space_2 /= 0
-         then
-            Put_Line ("Usage: " & Cmd & " <key>");
-         elsif Cmd = "get" then
-            Store_Get (Make_Key (Args), V, Found);
-            Put_Line
-              (if Found then "Value: " & Value_Text (V)
-               else "Key not found.");
          else
-            Store_Delete (Make_Key (Args), OK);
-            Put_Line
-              (if OK then "OK" else "Delete failed.");
+            declare
+               use Ada.Strings.Unbounded;
+               Key_Text : Unbounded_String;
+               Next_Pos : Natural;
+            begin
+               if not Parse_Key (Args, Key_Text, Next_Pos) then
+                  Put_Line ("Usage: " & Cmd & " <key>");
+               elsif Next_Pos <= Args'Last
+                 and then
+                   Trim (Args (Next_Pos .. Args'Last),
+                         Ada.Strings.Both) /= ""
+               then
+                  Put_Line ("Usage: " & Cmd & " <key>");
+               elsif Cmd = "get" then
+                  Store_Get
+                    (Make_Key (To_String (Key_Text)), V, Found);
+                  Put_Line
+                    (if Found then "Value: " & Value_Text (V)
+                     else "Key not found.");
+               else
+                  Store_Delete
+                    (Make_Key (To_String (Key_Text)), OK);
+                  Put_Line
+                    (if OK then "OK" else "Delete failed.");
+               end if;
+            end;
          end if;
 
       elsif Cmd'Length > 0 then
          Put_Line ("Unknown command. Type help.");
       end if;
    end Execute;
+
 
 begin
    Put_Line ("Legder CLI - file and RAM devices");
