@@ -1,30 +1,11 @@
 with Ada.Directories;
-with Interfaces.C;           use Interfaces.C;
-with Interfaces.C.Strings;
 with GNAT.OS_Lib;          use GNAT.OS_Lib;
-with Legder.Header;          use type Legder.Header.Status;
+with Legder.File_Device_OS;
+with Legder.Header;        use type Legder.Header.Status;
 
 package body Legder.File_Device with SPARK_Mode => Off is
 
-   ---------------------------------------------------------------------
-   --  The C shim, legder_file_device.c: the calls GNAT.OS_Lib lacks.
-   ---------------------------------------------------------------------
-
-   function Fd_Sync (FD : int) return int
-     with Import, Convention => C, External_Name => "legder_fd_sync";
-   --  0 when every write to FD is on stable storage.
-
-   function Fd_Lock (FD : int) return int
-     with Import, Convention => C, External_Name => "legder_fd_lock";
-   --  0 locked, 1 held by someone else, -1 error.
-
-   function Dir_Sync (Path : Interfaces.C.Strings.chars_ptr) return int
-     with Import, Convention => C, External_Name => "legder_dir_sync";
-   --  0 when the directory entries in Path are durable.
-
-   ---------------------------------------------------------------------
-   --  State: one file per instance.
-   ---------------------------------------------------------------------
+   package OS renames Legder.File_Device_OS;
 
    FD     : File_Descriptor := Invalid_FD;
    Failed : Boolean := False;
@@ -43,20 +24,17 @@ package body Legder.File_Device with SPARK_Mode => Off is
    end Fail;
 
    procedure Check_Usable;
-   --  Raises unless the device is open and has not failed.
 
    function Pwrite (Data : Byte_Array; At_Offset : Long_Integer) return Boolean;
    function Pread
      (Data : out Byte_Array; At_Offset : Long_Integer; Got : out Natural) return Boolean;
-   --  Raw transfers. Both loop over short counts; False means an OS
-   --  error. Pread fills past EOF with 16#FF#, and reports in Got how
+   --  Positional transfers. Both loop over short counts; False means an
+   --  OS error. Pread fills past EOF with 16#FF#, and reports in Got how
    --  many bytes the file held.
 
    function Sync_Directory (Path : String) return Boolean;
-   --  Makes the directory entry for Path durable.
 
    procedure Abandon (Result : out Open_Result; Why : Open_Result);
-   --  Closes a half-opened file and reports Why.
 
    procedure Check_Usable is
    begin
@@ -71,10 +49,10 @@ package body Legder.File_Device with SPARK_Mode => Off is
       Done : Natural := 0;
       N    : Integer;
    begin
-      Lseek (FD, At_Offset, Seek_Set);
       while Done < Data'Length loop
-         N := GNAT.OS_Lib.Write
-           (FD, Data (Data'First + Done)'Address, Data'Length - Done);
+         N := OS.Write_At
+           (FD, Data (Data'First + Done)'Address, Data'Length - Done,
+            At_Offset + Long_Integer (Done));
          if N <= 0 then
             return False;
          end if;
@@ -90,9 +68,10 @@ package body Legder.File_Device with SPARK_Mode => Off is
    begin
       Data := [others => 16#FF#];
       Got := 0;
-      Lseek (FD, At_Offset, Seek_Set);
       while Got < Data'Length loop
-         N := GNAT.OS_Lib.Read (FD, Data (Data'First + Got)'Address, Data'Length - Got);
+         N := OS.Read_At
+           (FD, Data (Data'First + Got)'Address, Data'Length - Got,
+            At_Offset + Long_Integer (Got));
          if N < 0 then
             return False;
          end if;
@@ -103,14 +82,9 @@ package body Legder.File_Device with SPARK_Mode => Off is
    end Pread;
 
    function Sync_Directory (Path : String) return Boolean is
-      Dir : Interfaces.C.Strings.chars_ptr;
-      R   : int;
    begin
-      Dir := Interfaces.C.Strings.New_String
+      return OS.Sync_Directory
         (Ada.Directories.Containing_Directory (Ada.Directories.Full_Name (Path)));
-      R := Dir_Sync (Dir);
-      Interfaces.C.Strings.Free (Dir);
-      return R = 0;
    exception
       when others =>
          return False;
@@ -126,15 +100,10 @@ package body Legder.File_Device with SPARK_Mode => Off is
       Result := Why;
    end Abandon;
 
-   ----------
-   -- Open --
-   ----------
-
    procedure Open (Path : String; Result : out Open_Result) is
-      Created : Boolean := False;
-      Length  : Long_Integer;
-      B0      : Block;
-      Got     : Natural;
+      Length : Long_Integer;
+      B0     : Block;
+      Got    : Natural;
    begin
       if FD /= Invalid_FD then
          Result := Already_Open;
@@ -153,7 +122,6 @@ package body Legder.File_Device with SPARK_Mode => Off is
          FD := Create_New_File (Path, Binary);
          if FD /= Invalid_FD then
             GNAT.OS_Lib.Close (FD);
-            Created := True;
             FD := Open_Read_Write (Path, Binary);
          end if;
       end if;
@@ -162,10 +130,10 @@ package body Legder.File_Device with SPARK_Mode => Off is
          return;
       end if;
 
-      case Fd_Lock (int (FD)) is
-         when 0      => null;
-         when 1      => Abandon (Result, Locked); return;
-         when others => Abandon (Result, IO_Failed); return;
+      case OS.Lock (FD) is
+         when OS.Locked => null;
+         when OS.Busy   => Abandon (Result, Locked); return;
+         when OS.Failed => Abandon (Result, IO_Failed); return;
       end case;
 
       Length := File_Length (FD);
@@ -177,8 +145,6 @@ package body Legder.File_Device with SPARK_Mode => Off is
          return;
       end if;
 
-      --  Never write into a file that is not ours. Block 0 decides:
-      --  erased (missing bytes count as erased) or a legder header.
       if not Pread (B0, 0, Got) then
          Abandon (Result, IO_Failed);
          return;
@@ -198,8 +164,6 @@ package body Legder.File_Device with SPARK_Mode => Off is
          end;
       end if;
 
-      --  Bring a short file to full size, as erased blocks, and make
-      --  that durable before the log can write a header into it.
       if Length < Image_Bytes then
          declare
             Pos : Long_Integer := Length;
@@ -214,22 +178,22 @@ package body Legder.File_Device with SPARK_Mode => Off is
                Pos := Pos + Len;
             end loop;
          end;
-         if Fd_Sync (int (FD)) /= 0 then
+         if not OS.File_Sync (FD) then
             Abandon (Result, IO_Failed);
             return;
          end if;
       end if;
-      if Created and then not Sync_Directory (Path) then
+
+      --  Confirm the name entry on every success, not only when this
+      --  call created the file: an earlier attempt may have stopped
+      --  after the file existed but before its entry was durable.
+      if not Sync_Directory (Path) then
          Abandon (Result, IO_Failed);
          return;
       end if;
 
       Result := Ok;
    end Open;
-
-   -----------
-   -- Close --
-   -----------
 
    procedure Close is
    begin
@@ -244,10 +208,6 @@ package body Legder.File_Device with SPARK_Mode => Off is
 
    function Has_Failed return Boolean is (Failed);
 
-   ----------
-   -- Read --
-   ----------
-
    procedure Read (Index : Block_Index; Data : out Block) is
       Got : Natural;
    begin
@@ -261,15 +221,10 @@ package body Legder.File_Device with SPARK_Mode => Off is
       end if;
    end Read;
 
-   -----------
-   -- Write --
-   -----------
-
    procedure Write (Index : Block_Index; Data : Block) is
    begin
       Check_Usable;
       if Index > Block_Count then
-         --  Silently dropping it would let a commit look durable.
          raise Device_Error with "write past last block" & Block_Count'Image;
       end if;
       if not Pwrite (Data, Offset (Index)) then
@@ -277,21 +232,45 @@ package body Legder.File_Device with SPARK_Mode => Off is
       end if;
    end Write;
 
-   ----------
-   -- Sync --
-   ----------
-
    procedure Sync is
    begin
       Check_Usable;
-      if Fd_Sync (int (FD)) /= 0 then
+      if not OS.File_Sync (FD) then
          Fail ("sync failed");
       end if;
    end Sync;
 
-   -----------
-   -- Erase --
-   -----------
+   procedure Read
+     (Index : Block_Index; Data : out Block; Result : out Device_Result)
+   is
+   begin
+      Read (Index, Data);
+      Result := Success;
+   exception
+      when Device_Error =>
+         Data := [others => 0];
+         Result := Legder.Failed;
+   end Read;
+
+   procedure Write
+     (Index : Block_Index; Data : Block; Result : out Device_Result)
+   is
+   begin
+      Write (Index, Data);
+      Result := Success;
+   exception
+      when Device_Error =>
+         Result := Legder.Failed;
+   end Write;
+
+   procedure Sync (Result : out Device_Result) is
+   begin
+      Sync;
+      Result := Success;
+   exception
+      when Device_Error =>
+         Result := Legder.Failed;
+   end Sync;
 
    procedure Erase is
    begin

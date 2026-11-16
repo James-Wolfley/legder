@@ -1,6 +1,7 @@
 with Ada.Text_IO;
 with Ada.Strings;
 with Ada.Strings.Fixed;
+with Ada.Strings.Unbounded;
 with Ada.Characters.Handling;
 with Ada.Exceptions;
 with Legder;
@@ -146,16 +147,16 @@ procedure Legder_CLI is
    end Open_RAM;
 
    procedure Store_Put
-     (K : Legder.Key; V : Legder.Value; OK : out Boolean)
+     (K : Legder.Key; V : Legder.Value; Result : out Legder.Update_Result)
    is
    begin
       case Active is
          when File_Backend =>
-            File_KV.Put (File_DB, K, V, OK);
+            File_KV.Put (File_DB, K, V, Result);
          when RAM_Backend =>
-            RAM_KV.Put (RAM_DB, K, V, OK);
+            RAM_KV.Put (RAM_DB, K, V, Result);
          when None =>
-            OK := False;
+            Result := Legder.Closed;
       end case;
    end Store_Put;
 
@@ -175,18 +176,33 @@ procedure Legder_CLI is
    end Store_Get;
 
    procedure Store_Delete
-     (K : Legder.Key; OK : out Boolean)
+     (K : Legder.Key; Result : out Legder.Update_Result)
    is
    begin
       case Active is
          when File_Backend =>
-            File_KV.Delete (File_DB, K, OK);
+            File_KV.Delete (File_DB, K, Result);
          when RAM_Backend =>
-            RAM_KV.Delete (RAM_DB, K, OK);
+            RAM_KV.Delete (RAM_DB, K, Result);
          when None =>
-            OK := False;
+            Result := Legder.Closed;
       end case;
    end Store_Delete;
+
+   procedure Report_Update (Result : Legder.Update_Result) is
+   begin
+      case Result is
+         when Legder.Applied =>
+            Put_Line ("OK");
+         when Legder.No_Space =>
+            Put_Line ("Update failed: no space.");
+         when Legder.Closed =>
+            Put_Line ("Update failed: store closed.");
+         when Legder.Storage_Failure =>
+            Put_Line ("Update failed: storage failure. Store unloaded.");
+            Unload;
+      end case;
+   end Report_Update;
 
    function Store_Count return Natural is
    begin
@@ -290,8 +306,8 @@ procedure Legder_CLI is
          else Trim
            (Line (Space_1 + 1 .. Line'Last),
             Ada.Strings.Both));
-      Space_2 : constant Natural := Index (Args, " ");
-      OK, Found : Boolean;
+      Found : Boolean;
+      Result : Legder.Update_Result;
       V : Legder.Value;
    begin
       if Cmd = "help" then
@@ -394,10 +410,8 @@ procedure Legder_CLI is
                      else
                         Store_Put
                           (Make_Key (To_String (Key_Text)),
-                           Make_Value (Data), OK);
-                        Put_Line
-                          (if OK then "OK"
-                           else "Put failed: capacity or log full.");
+                           Make_Value (Data), Result);
+                        Report_Update (Result);
                      end if;
                   end;
                end if;
@@ -430,9 +444,8 @@ procedure Legder_CLI is
                      else "Key not found.");
                else
                   Store_Delete
-                    (Make_Key (To_String (Key_Text)), OK);
-                  Put_Line
-                    (if OK then "OK" else "Delete failed.");
+                    (Make_Key (To_String (Key_Text)), Result);
+                  Report_Update (Result);
                end if;
             end;
          end if;

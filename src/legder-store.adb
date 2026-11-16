@@ -2,8 +2,7 @@ with Legder.Record_Format;
 package body Legder.Store with SPARK_Mode is
 
    use Legder.Record_Format;
-
-   --  PLACEHOLDER index: linear scan. See the spec.
+   use type L.Log_Phase;
 
    function Find (T : Entry_Array; K : Key) return Natural;
    function Free_Slot (T : Entry_Array) return Natural;
@@ -29,8 +28,6 @@ package body Legder.Store with SPARK_Mode is
       return 0;
    end Free_Slot;
 
-   --  Apply one record to the table. Used by Put and Delete after commit;
-   --  replay builds the final state separately.
    procedure Apply (T : in out Entry_Array; Live : in out Natural; R : Log_Record) is
       I : constant Natural := Find (T, R.K);
    begin
@@ -56,18 +53,12 @@ package body Legder.Store with SPARK_Mode is
       end case;
    end Apply;
 
-   -------------
-   -- Is_Open --
-   -------------
-
-   function Is_Open (S : Store) return Boolean is (S.Log.Opened);
-
-   ----------
-   -- Open --
-   ----------
+   function Is_Open (S : Store) return Boolean is (S.Log.Phase = L.Ready);
 
    procedure Open (S : out Store; Replayed : out Natural; Status : out Open_Status) is
       Exceeded : Boolean := False;
+      Failed_Scan : Boolean := False;
+      Complete : Boolean;
 
       procedure Visit (R : Log_Record);
       procedure Visit (R : Log_Record) is
@@ -75,6 +66,7 @@ package body Legder.Store with SPARK_Mode is
          if R.Kind = Put and then not Exceeded then
             declare
                Superseded : Boolean := False;
+               Scanned : Boolean;
                procedure Check (Later : Log_Record);
                procedure Check (Later : Log_Record) is
                begin
@@ -84,8 +76,10 @@ package body Legder.Store with SPARK_Mode is
                end Check;
                procedure Scan_All is new L.Scan (Check);
             begin
-               Scan_All (S.Log);
-               if not Superseded then
+               Scan_All (S.Log, Scanned);
+               if not Scanned then
+                  Failed_Scan := True;
+               elsif not Superseded then
                   if S.Live = Capacity then
                      Exceeded := True;
                   else
@@ -101,79 +95,72 @@ package body Legder.Store with SPARK_Mode is
    begin
       S.Table := [others => <>];
       S.Live := 0;
-      L.Open (S.Log, Replayed, Status, Initialize_Header => False);
+      L.Inspect (S.Log, Replayed, Status);
       if Status = Opened then
-         Replay_Final (S.Log);
-         if Exceeded then
-            S.Table := [others => <>];
-            S.Live := 0;
-            S.Log.Opened := False;
+         Replay_Final (S.Log, Complete);
+         if not Complete or else Failed_Scan then
+            Unload (S);
+            Replayed := 0;
+            Status := Storage_Failure;
+         elsif Exceeded then
+            Unload (S);
             Status := Capacity_Exceeded;
          else
-            --  Provision an erased header only after capacity fits.
-            L.Open (S.Log, Replayed, Status);
+            L.Open (S.Log, Status);
+            if Status /= Opened then
+               Unload (S);
+               Replayed := 0;
+            end if;
          end if;
       end if;
    end Open;
-
-   ------------
-   -- Unload --
-   ------------
 
    procedure Unload (S : in out Store) is
    begin
       S.Table := [others => <>];
       S.Live := 0;
-      S.Log.Opened := False;
+      S.Log.Phase := L.Closed;
    end Unload;
 
-   ---------
-   -- Put --
-   ---------
-
-   procedure Put (S : in out Store; K : Key; V : Value; Success : out Boolean) is
+   procedure Put (S : in out Store; K : Key; V : Value; Result : out Update_Result) is
    begin
-      if not S.Log.Opened then
-         Success := False;
+      if not Is_Open (S) then
+         Result := Closed;
          return;
       end if;
       if Find (S.Table, K) = 0 and then Free_Slot (S.Table) = 0 then
-         Success := False;  --  S3: refuse before touching the log
+         Result := No_Space;
          return;
       end if;
-      L.Append (S.Log, Record_Format.Put, K, V, Success);
-      if Success then
+      L.Append (S.Log, Record_Format.Put, K, V, Result);
+      if Result = Applied then
          Apply (S.Table, S.Live,
                 (Seq => S.Log.Last_Seq, Kind => Record_Format.Put, K => K, V => V));
+      elsif Result = Storage_Failure then
+         Unload (S);
       end if;
    end Put;
 
-   ------------
-   -- Delete --
-   ------------
-
-   procedure Delete (S : in out Store; K : Key; Success : out Boolean) is
+   procedure Delete (S : in out Store; K : Key; Result : out Update_Result) is
       None : Value;
    begin
-      if not S.Log.Opened then
-         Success := False;
+      if not Is_Open (S) then
+         Result := Closed;
          return;
       end if;
-      L.Append (S.Log, Record_Format.Delete, K, None, Success);
-      if Success then
+      L.Append (S.Log, Record_Format.Delete, K, None, Result);
+      if Result = Applied then
          Apply (S.Table, S.Live,
                 (Seq => S.Log.Last_Seq, Kind => Record_Format.Delete, K => K, V => None));
+      elsif Result = Storage_Failure then
+         Unload (S);
       end if;
    end Delete;
-
-   ---------
-   -- Get --
-   ---------
 
    procedure Get (S : Store; K : Key; V : out Value; Found : out Boolean) is
       I : Natural;
    begin
-      if not S.Log.Opened then
+      if not Is_Open (S) then
          V := (others => <>);
          Found := False;
          return;
@@ -189,6 +176,6 @@ package body Legder.Store with SPARK_Mode is
    end Get;
 
    function Count (S : Store) return Natural is
-     (if S.Log.Opened then S.Live else 0);
+     (if Is_Open (S) then S.Live else 0);
 
 end Legder.Store;

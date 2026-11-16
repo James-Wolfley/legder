@@ -1,5 +1,4 @@
 --  Unit tests. Plain Ada, no framework, non-zero exit on failure.
---  One critical case per contract; add more when a bug needs one.
 
 with Ada.Assertions;        use Ada.Assertions;
 with Ada.Command_Line;
@@ -20,6 +19,7 @@ procedure Tests is
 
    package L is new Legder.Log
      (K_Bytes, V_Bytes, Dev.Block_Count, Dev.Read, Dev.Write, Dev.Sync);
+   use type L.Log_Phase;
    package KV is new Legder.Store
      (K_Bytes, V_Bytes, Dev.Block_Count, Dev.Read, Dev.Write, Dev.Sync);
    package Small is new Legder.Store
@@ -34,7 +34,6 @@ procedure Tests is
       if not Cond then Failures := Failures + 1; end if;
    end Check;
 
-   --  Keys and values are fixed width: zero padded, padding included.
    function K (S : String) return Key is
       R : Key;
    begin
@@ -60,14 +59,12 @@ procedure Tests is
    function All_Zero (X : Value) return Boolean is
      (for all I in 1 .. X.Length => X.Bytes (I) = 0);
 
-   --  A valid header block at the current version.
    procedure Header_Block (KS : Key_Size; VS : Value_Size; B : out Block) is
    begin
       Legder.Header.Encode
         ((Version => Legder.Header.Current_Version, K => KS, V => VS), B);
    end Header_Block;
 
-   --  Little-endian CRC-32 of the bytes before Off.
    procedure Put_CRC (B : in out Block; Off : Block_Offset) is
       Sum : CRC32 := CRC (B (0 .. Off - 1));
    begin
@@ -76,8 +73,6 @@ procedure Tests is
          Sum := Sum / 256;
       end loop;
    end Put_CRC;
-
-   ---------------------------------------------------------------------
 
    procedure Test_CRC is
       Check_Str : constant Byte_Array (1 .. 9) :=
@@ -95,10 +90,10 @@ procedure Tests is
       H           : Legder.Header.Header;
       HS          : Legder.Header.Status;
       Saw_Version : Boolean;
+      Result      : Device_Result;
       Want        : constant Legder.Header.Header :=
         (Version => Legder.Header.Current_Version, K => K_Bytes, V => V_Bytes);
    begin
-      --  The twelve bytes on disk are the format; decode must agree.
       Legder.Header.Encode (Want, B);
       Legder.Header.Decode (B, H, HS);
       declare
@@ -119,21 +114,24 @@ procedure Tests is
                 and H.K = Want.K and H.V = Want.V);
       end;
 
-      --  A damaged header is refused and nothing is overwritten.
       Header_Block (K_Bytes, V_Bytes, B);
       Dev.Erase;
-      Dev.Write (0, B);
-      Dev.Sync;
-      Dev.Read (0, B);
+      Dev.Write (0, B, Result);
+      pragma Assert (Result = Success);
+      Dev.Sync (Result);
+      pragma Assert (Result = Success);
+      Dev.Read (0, B, Result);
+      pragma Assert (Result = Success);
       B (5) := B (5) xor 1;
-      Dev.Write (0, B);
-      Dev.Sync;
+      Dev.Write (0, B, Result);
+      pragma Assert (Result = Success);
+      Dev.Sync (Result);
+      pragma Assert (Result = Success);
       W := Dev.Writes;
-      L.Open (S, N, St);
+      L.Inspect (S, N, St);
       Check ("damaged header refused, nothing written",
-             St = Bad_Header and not S.Opened and Dev.Writes = W);
+             St = Bad_Header and S.Phase = L.Closed and Dev.Writes = W);
 
-      --  Headers from another schema: a newer version, another layout.
       declare
          B2 : Block;
       begin
@@ -141,16 +139,20 @@ procedure Tests is
          B2 (4) := 2;
          Put_CRC (B2, 8);
          Dev.Erase;
-         Dev.Write (0, B2);
-         Dev.Sync;
-         L.Open (S, N, St);
+         Dev.Write (0, B2, Result);
+         pragma Assert (Result = Success);
+         Dev.Sync (Result);
+         pragma Assert (Result = Success);
+         L.Inspect (S, N, St);
          Saw_Version := St = Bad_Version;
 
          Header_Block (K_Bytes + 1, V_Bytes, B2);
          Dev.Erase;
-         Dev.Write (0, B2);
-         Dev.Sync;
-         L.Open (S, N, St);
+         Dev.Write (0, B2, Result);
+         pragma Assert (Result = Success);
+         Dev.Sync (Result);
+         pragma Assert (Result = Success);
+         L.Inspect (S, N, St);
          Check ("foreign header refused", Saw_Version and St = Wrong_Sizes);
       end;
    end Test_Header;
@@ -175,8 +177,6 @@ procedure Tests is
                     and D.K = K ("gone") and All_Zero (D.V);
       Check ("record round trip", Round_Trip);
 
-      --  A torn record, erased flash, a zeroed block, and a Delete that
-      --  carries a payload must all be rejected.
       Encode ((Seq => 7, Kind => Put, K => K ("a"), V => V ("1")),
               K_Bytes, V_Bytes, B);
       declare
@@ -209,47 +209,63 @@ procedure Tests is
    end Test_Record;
 
    procedure Test_Log is
-      S    : L.State;
-      N    : Natural;
-      St   : Open_Status;
-      OK   : Boolean;
-      Torn : Boolean;
+       S      : L.State;
+       N      : Natural;
+       St     : Open_Status;
+       Update : Update_Result;
+       Result : Device_Result;
+       Torn   : Boolean;
    begin
       Dev.Erase;
-      L.Open (S, N, St);
-      L.Append (S, Put, K ("a"), V ("1"), OK);
-      L.Append (S, Put, K ("b"), V ("2"), OK);
-      L.Append (S, Put, K ("c"), V ("3"), OK);
-      L.Open (S, N, St);
+      L.Inspect (S, N, St);
+      if St = Opened then L.Open (S, St); end if;
+      L.Append (S, Put, K ("a"), V ("1"), Update);
+      L.Append (S, Put, K ("b"), V ("2"), Update);
+      L.Append (S, Put, K ("c"), V ("3"), Update);
+      L.Inspect (S, N, St);
+      if St = Opened then L.Open (S, St); end if;
       Check ("appends recover",
-             N = 3 and S.Head = 4 and S.Last_Seq = 3 and Dev.Syncs = 4);
+             St = Opened and Update = Applied and N = 3
+             and S.Head = 4 and S.Last_Seq = 3 and Dev.Syncs = 5);
 
-      --  A torn write is not recovered, the next append reuses its
-      --  block, and a stale record beyond it is not adopted.
       Dev.Tear_Next_Write;
-      L.Append (S, Put, K ("d"), V ("4"), OK);
-      L.Open (S, N, St);
+      L.Append (S, Put, K ("d"), V ("4"), Update);
+      L.Inspect (S, N, St);
+      if St = Opened then L.Open (S, St); end if;
       Torn := N = 3 and S.Head = 4;
 
-      L.Append (S, Put, K ("e"), V ("5"), OK);
+      L.Append (S, Put, K ("e"), V ("5"), Update);
       declare
          B : Block;
          R : constant Log_Record :=
            (Seq => 99, Kind => Put, K => K ("stale"), V => V ("x"));
       begin
          Encode (R, K_Bytes, V_Bytes, B);
-         Dev.Write (5, B);
-         Dev.Sync;
+         Dev.Write (5, B, Result);
+         pragma Assert (Result = Success);
+         Dev.Sync (Result);
+         pragma Assert (Result = Success);
       end;
-      L.Open (S, N, St);
-      Check ("torn and stale blocks stop recovery",
-             Torn and N = 4 and S.Last_Seq = 4);
+      L.Inspect (S, N, St);
+      if St = Opened then L.Open (S, St); end if;
+       Check ("torn and stale blocks stop recovery",
+              Torn and N = 4 and S.Last_Seq = 4);
+       declare
+          Writes_Before : constant Natural := Dev.Writes;
+          Syncs_Before  : constant Natural := Dev.Syncs;
+       begin
+          L.Open (S, St);
+          L.Append (S, Put, K ("f"), V ("6"), Update);
+          Check ("failed finalization closes the log before another append",
+                 St = Storage_Failure and Update = Closed
+                 and Dev.Writes = Writes_Before and Dev.Syncs = Syncs_Before);
+       end;
    end Test_Log;
 
    procedure Test_Store is
       N     : Natural;
       St    : Open_Status;
-      OK    : Boolean;
+      Update : Update_Result;
       Got   : Value;
       Found : Boolean;
       Has_X : Boolean;
@@ -259,10 +275,10 @@ procedure Tests is
          S : KV.Store;
       begin
          KV.Open (S, N, St);
-         KV.Put (S, K ("x"), V ("1"), OK);
-         KV.Put (S, K ("y"), V ("2"), OK);
-         KV.Put (S, K ("x"), V ("3"), OK);
-         KV.Delete (S, K ("y"), OK);
+         KV.Put (S, K ("x"), V ("1"), Update);
+         KV.Put (S, K ("y"), V ("2"), Update);
+         KV.Put (S, K ("x"), V ("3"), Update);
+         KV.Delete (S, K ("y"), Update);
          KV.Get (S, K ("x"), Got, Found);
          Has_X := Found and Same (Got, V ("3"));
          KV.Get (S, K ("y"), Got, Found);
@@ -282,25 +298,24 @@ procedure Tests is
    procedure Test_Unload is
       N     : Natural;
       St    : Open_Status;
-      OK    : Boolean;
+      Update : Update_Result;
+      Result : Device_Result;
       Got   : Value;
       Found : Boolean;
       W     : Natural;
       Sy    : Natural;
       Exact : Boolean;
 
-      --  Every store operation must refuse while the store is closed,
-      --  with no device I/O and no live entries.
       function Refuses_All (S : in out KV.Store; W, Sy : Natural) return Boolean is
-         Put_OK    : Boolean := True;
-         Delete_OK : Boolean := True;
+         Put_Result    : Update_Result;
+         Delete_Result : Update_Result;
          Got       : Value := V ("x");
          Found     : Boolean := True;
       begin
-         KV.Put (S, K ("x"), V ("1"), Put_OK);
-         KV.Delete (S, K ("x"), Delete_OK);
+         KV.Put (S, K ("x"), V ("1"), Put_Result);
+         KV.Delete (S, K ("x"), Delete_Result);
          KV.Get (S, K ("x"), Got, Found);
-         return not Put_OK and then not Delete_OK
+         return Put_Result = Closed and then Delete_Result = Closed
                 and then not Found and then All_Zero (Got)
                 and then KV.Count (S) = 0
                 and then not KV.Is_Open (S)
@@ -317,10 +332,10 @@ procedure Tests is
          Refused := Refuses_All (S, Dev.Writes, Dev.Syncs);
          KV.Open (S, N, St);
          Was_Open := St = Opened and then KV.Is_Open (S);
-         KV.Put (S, K ("x"), V ("1"), OK);
-         KV.Put (S, K ("y"), V ("2"), OK);
-         KV.Put (S, K ("x"), V ("3"), OK);
-         KV.Delete (S, K ("y"), OK);
+         KV.Put (S, K ("x"), V ("1"), Update);
+         KV.Put (S, K ("y"), V ("2"), Update);
+         KV.Put (S, K ("x"), V ("3"), Update);
+         KV.Delete (S, K ("y"), Update);
          W := Dev.Writes;
          Sy := Dev.Syncs;
          KV.Unload (S);
@@ -337,9 +352,9 @@ procedure Tests is
                   and then KV.Count (S) = 1;
          KV.Get (S, K ("y"), Got, Found);
          Exact := Exact and then not Found;
-         KV.Put (S, K ("z"), V ("4"), OK);
+         KV.Put (S, K ("z"), V ("4"), Update);
          KV.Unload (S);
-         Check ("reopen recovers exact contents after unload", Exact and then OK);
+         Check ("reopen recovers exact contents after unload", Exact and then Update = Applied);
          KV.Open (S, N, St);
          KV.Get (S, K ("z"), Got, Found);
          Exact := St = Opened and then N = 5 and then KV.Is_Open (S)
@@ -354,12 +369,17 @@ procedure Tests is
          S : KV.Store;
       begin
          Header_Block (K_Bytes, V_Bytes, B);
-         Dev.Write (0, B);
-         Dev.Sync;
-         Dev.Read (0, B);
+         Dev.Write (0, B, Result);
+         pragma Assert (Result = Success);
+         Dev.Sync (Result);
+         pragma Assert (Result = Success);
+         Dev.Read (0, B, Result);
+         pragma Assert (Result = Success);
          B (5) := B (5) xor 1;
-         Dev.Write (0, B);
-         Dev.Sync;
+         Dev.Write (0, B, Result);
+         pragma Assert (Result = Success);
+         Dev.Sync (Result);
+         pragma Assert (Result = Success);
          KV.Open (S, N, St);
          W := Dev.Writes;
          Sy := Dev.Syncs;
@@ -373,7 +393,7 @@ procedure Tests is
       S       : KV.Store;
       N       : Natural;
       St      : Open_Status;
-      OK      : Boolean;
+      Update  : Update_Result;
       W       : Natural;
       Short   : Key   := K ("a");
       SV      : Value := V ("v");
@@ -386,14 +406,14 @@ procedure Tests is
       W := Dev.Writes;
 
       begin
-         KV.Put (S, Short, V ("1"), OK);
+         KV.Put (S, Short, V ("1"), Update);
          Refused := False;
       exception
          when Assertion_Error =>
             null;
       end;
       begin
-         KV.Put (S, K ("a"), SV, OK);
+         KV.Put (S, K ("a"), SV, Update);
          Refused := False;
       exception
          when Assertion_Error =>
@@ -405,51 +425,56 @@ procedure Tests is
    procedure Test_Capacity is
       N  : Natural;
       St : Open_Status;
-      OK : Boolean;
+      Update : Update_Result;
       S  : KV.Store;
       W  : Natural;
+      Sy : Natural;
    begin
       Dev.Erase;
       KV.Open (S, N, St);
       for I in 1 .. KV.Max_Entries loop
-         KV.Put (S, K ("k" & I'Image), V ("v"), OK);
-         exit when not OK;
+         KV.Put (S, K ("k" & I'Image), V ("v"), Update);
+         exit when Update /= Applied;
       end loop;
       W := Dev.Writes;
-      KV.Put (S, K ("one more"), V ("v"), OK);
+      Sy := Dev.Syncs;
+      KV.Put (S, K ("one more"), V ("v"), Update);
       Check ("full store refuses without writing",
-             not OK and KV.Count (S) = 255 and Dev.Writes = W);
+             Update = No_Space and KV.Count (S) = 255
+             and Dev.Writes = W and Dev.Syncs = Sy);
    end Test_Capacity;
 
    procedure Test_Small_Capacity is
       S     : Small.Store;
       N     : Natural;
       St    : Open_Status;
-      OK    : Boolean;
+      Update : Update_Result;
       Got   : Value;
       Found : Boolean;
       W     : Natural;
+      Sy    : Natural;
    begin
       Dev.Erase;
       Small.Open (S, N, St);
-      Small.Put (S, K ("a"), V ("1"), OK);
-      Small.Put (S, K ("b"), V ("2"), OK);
+      Small.Put (S, K ("a"), V ("1"), Update);
+      Small.Put (S, K ("b"), V ("2"), Update);
       W := Dev.Writes;
-      Small.Put (S, K ("c"), V ("3"), OK);
+      Sy := Dev.Syncs;
+      Small.Put (S, K ("c"), V ("3"), Update);
       Check ("small capacity refuses a new key before writing",
-             St = Opened and not OK and Small.Count (S) = 2
-             and Dev.Writes = W);
+             St = Opened and Update = No_Space and Small.Count (S) = 2
+             and Dev.Writes = W and Dev.Syncs = Sy);
 
-      Small.Put (S, K ("a"), V ("9"), OK);
+      Small.Put (S, K ("a"), V ("9"), Update);
       Small.Get (S, K ("a"), Got, Found);
       Check ("full store still updates an existing key",
-             OK and Found and Same (Got, V ("9")) and Small.Count (S) = 2);
+             Update = Applied and Found and Same (Got, V ("9")) and Small.Count (S) = 2);
 
-      Small.Delete (S, K ("b"), OK);
-      Small.Put (S, K ("c"), V ("3"), OK);
+      Small.Delete (S, K ("b"), Update);
+      Small.Put (S, K ("c"), V ("3"), Update);
       Small.Get (S, K ("c"), Got, Found);
       Check ("deleted slot is reused",
-             OK and Found and Same (Got, V ("3")) and Small.Count (S) = 2);
+             Update = Applied and Found and Same (Got, V ("3")) and Small.Count (S) = 2);
    end Test_Small_Capacity;
 
    procedure Test_Replay_Capacity is
@@ -457,28 +482,28 @@ procedure Tests is
       Lg    : KV.Store;
       N     : Natural;
       St    : Open_Status;
-      OK    : Boolean;
+      Update : Update_Result;
+      Result : Device_Result;
       Got   : Value;
       Found : Boolean;
       W     : Natural;
+      Sy    : Natural;
       Wrote : Boolean := True;
       Exact : Boolean;
    begin
       Dev.Erase;
       KV.Open (Lg, N, St);
 
-      --  Peak of three live keys, but the last operation for b is Delete and
-      --  a is overwritten: the final live set is exactly Capacity.
-      KV.Put (Lg, K ("a"), V ("1"), OK);
-      Wrote := Wrote and OK;
-      KV.Put (Lg, K ("b"), V ("2"), OK);
-      Wrote := Wrote and OK;
-      KV.Put (Lg, K ("c"), V ("3"), OK);
-      Wrote := Wrote and OK;
-      KV.Put (Lg, K ("a"), V ("9"), OK);
-      Wrote := Wrote and OK;
-      KV.Delete (Lg, K ("b"), OK);
-      Wrote := Wrote and OK;
+      KV.Put (Lg, K ("a"), V ("1"), Update);
+      Wrote := Wrote and Update = Applied;
+      KV.Put (Lg, K ("b"), V ("2"), Update);
+      Wrote := Wrote and Update = Applied;
+      KV.Put (Lg, K ("c"), V ("3"), Update);
+      Wrote := Wrote and Update = Applied;
+      KV.Put (Lg, K ("a"), V ("9"), Update);
+      Wrote := Wrote and Update = Applied;
+      KV.Delete (Lg, K ("b"), Update);
+      Wrote := Wrote and Update = Applied;
 
       Small.Open (S, N, St);
       Small.Get (S, K ("a"), Got, Found);
@@ -490,24 +515,26 @@ procedure Tests is
              Wrote and St = Opened and N = 5 and Small.Is_Open (S)
              and Small.Count (S) = 2 and Exact and Found);
 
-      KV.Put (Lg, K ("d"), V ("4"), OK);
+      KV.Put (Lg, K ("d"), V ("4"), Update);
       W := Dev.Writes;
+      Sy := Dev.Syncs;
       Small.Open (S, N, St);
       Small.Get (S, K ("a"), Got, Found);
       Check ("final live set above capacity refuses with no writes",
-             OK and St = Capacity_Exceeded and N = 6
+             Update = Applied and St = Capacity_Exceeded and N = 6
              and not Small.Is_Open (S) and Small.Count (S) = 0
-             and not Found and Dev.Writes = W);
+             and not Found and Dev.Writes = W and Dev.Syncs = Sy);
 
-      --  Erased header with surviving records: refusal must still not
-      --  provision the header.
-      Dev.Write (0, [others => 16#FF#]);
-      Dev.Sync;
+      Dev.Write (0, [others => 16#FF#], Result);
+      pragma Assert (Result = Success);
+      Dev.Sync (Result);
+      pragma Assert (Result = Success);
       W := Dev.Writes;
+      Sy := Dev.Syncs;
       Small.Open (S, N, St);
       Check ("refusal after erased header writes nothing",
              St = Capacity_Exceeded and N = 6 and not Small.Is_Open (S)
-             and Dev.Writes = W);
+             and Dev.Writes = W and Dev.Syncs = Sy);
 
       KV.Open (Lg, N, St);
       KV.Get (Lg, K ("a"), Got, Found);
