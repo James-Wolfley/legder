@@ -1,0 +1,20 @@
+name = "legder_cli"
+description = "Interactice CLI tool for the Legder transactional storage application."
+version = "0.1.0-dev"
+authors = ["Noah Blumenstock"]
+licenses = "Apache-2.0"
+
+tags = ["storage", "cli", "embedded", "testing"]
+
+executables = ["legder_cli"]
+project-files = ["legder_cli.gpr"]
+
+[[depends-on]]
+legder = "*"
+
+[[depends-on]]
+legder_file_device = "*"
+
+[[pins]]
+legder = { path = ".." }
+legder_file_device = { path = "../devices/file" }

@@ -1,0 +1,15 @@
+with "../legder.gpr";
+with "../devices/file/legder_file_device.gpr";
+
+project Legder_CLI is
+   for Source_Dirs use ("src");
+   for Object_Dir use "obj";
+   for Exec_Dir use "bin";
+   for Main use ("legder_cli.adb");
+   for Create_Missing_Dirs use "True";
+
+   package Compiler is
+      for Default_Switches ("Ada") use
+        ("-gnat2022", "-gnata", "-gnatwa");
+   end Compiler;
+end Legder_CLI;
