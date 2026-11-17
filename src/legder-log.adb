@@ -1,6 +1,12 @@
-with Legder.Header; use Legder.Header;
+with Legder.Header;
+with Legder.Record_Format;
 
 package body Legder.Log with SPARK_Mode is
+
+   package Header is new Legder.Header;
+   use Header;
+   package Record_Format is new Legder.Record_Format;
+   use Record_Format;
 
    procedure Inspect
      (S : out State; Recovered : out Natural; Status : out Open_Status)
@@ -31,13 +37,13 @@ package body Legder.Log with SPARK_Mode is
                        then Bad_Version else Bad_Header);
             return;
          end if;
-         if H.K /= K_Size or else H.V /= V_Size then
+         if H.K /= Key'Length or else H.V /= Value'Length then
             Status := Wrong_Sizes;
             return;
          end if;
       end if;
 
-      for I in Block_Index range 1 .. Block_Count loop
+      for I in Block_Index range 1 .. Last_Block loop
          pragma Loop_Invariant (Head = Natural (I));
          pragma Loop_Invariant (Recovered = Natural (I) - 1);
          Read (I, B, Result);
@@ -46,7 +52,7 @@ package body Legder.Log with SPARK_Mode is
             Status := Storage_Failure;
             return;
          end if;
-         Decode (B, K_Size, V_Size, R, Valid);
+         Decode (B, R, Valid);
          exit when not Valid or else R.Seq /= Seq + 1;
          Seq := R.Seq;
          Head := Head + 1;
@@ -69,7 +75,7 @@ package body Legder.Log with SPARK_Mode is
       end if;
       if S.Needs_Header then
          Header.Encode
-           ((Version => Current_Version, K => K_Size, V => V_Size), B);
+           ((Version => Current_Version, K => Key'Length, V => Value'Length), B);
          Write (0, B, Result);
          if Result = Failed then
             S.Phase := Closed;
@@ -105,7 +111,7 @@ package body Legder.Log with SPARK_Mode is
          return;
       end if;
       R := (Seq => S.Last_Seq + 1, Kind => Kind, K => K, V => V);
-      Encode (R, K_Size, V_Size, B);
+      Encode (R, B);
       Write (Block_Index (S.Head), B, IO);
       if IO = Failed then
          S.Phase := Closed;
@@ -139,7 +145,7 @@ package body Legder.Log with SPARK_Mode is
          if IO = Failed then
             return;
          end if;
-         Decode (B, K_Size, V_Size, R, Valid);
+         Decode (B, R, Valid);
          if not Valid or else R.Seq /= Seq + 1 then
             return;
          end if;

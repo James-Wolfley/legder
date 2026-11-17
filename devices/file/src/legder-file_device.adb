@@ -1,11 +1,13 @@
 with Ada.Directories;
 with GNAT.OS_Lib;          use GNAT.OS_Lib;
 with Legder.File_Device_OS;
-with Legder.Header;        use type Legder.Header.Status;
+with Legder.Header;
 
 package body Legder.File_Device with SPARK_Mode => Off is
 
-   package OS renames Legder.File_Device_OS;
+   package OS is new Legder.File_Device_OS;
+   package H is new Legder.Header;
+   use type H.Status;
 
    FD     : File_Descriptor := Invalid_FD;
    Failed : Boolean := False;
@@ -13,7 +15,7 @@ package body Legder.File_Device with SPARK_Mode => Off is
    Erased : constant Block := [others => 16#FF#];
 
    function Offset (Index : Block_Index) return Long_Integer is
-     (Long_Integer (Index) * Block_Size);
+     (Long_Integer (Index) * Long_Integer (Block_Size));
 
    procedure Fail (Why : String) with No_Return;
 
@@ -145,22 +147,30 @@ package body Legder.File_Device with SPARK_Mode => Off is
          return;
       end if;
 
-      if not Pread (B0, 0, Got) then
+      if not Pread (B0, 0, Got)
+        or else Long_Integer (Got) /= Long_Integer'Min (Length, Long_Integer (Block_Size))
+      then
          Abandon (Result, IO_Failed);
          return;
       end if;
       if B0 /= Erased then
          declare
-            H  : Legder.Header.Header;
-            HS : Legder.Header.Status;
+            Header : H.Header;
+            HS     : H.Status;
          begin
-            Legder.Header.Decode (B0, H, HS);
-            if HS = Legder.Header.Bad_Header then
+            H.Decode (B0, Header, HS);
+            if HS = H.Bad_Header then
                Abandon (Result, Foreign);
                return;
+            elsif HS = H.Unsupported_Version then
+               Abandon (Result, Bad_Version);
+               return;
+            elsif Natural (Header.K) /= Key'Length
+              or else Natural (Header.V) /= Value'Length
+            then
+               Abandon (Result, Wrong_Sizes);
+               return;
             end if;
-            --  Unsupported_Version is still a legder file: Store.Open
-            --  reports it as Bad_Version without writing.
          end;
       end if;
 
@@ -170,7 +180,9 @@ package body Legder.File_Device with SPARK_Mode => Off is
             Len : Long_Integer;
          begin
             while Pos < Image_Bytes loop
-               Len := Long_Integer'Min (Block_Size - Pos mod Block_Size, Image_Bytes - Pos);
+               Len := Long_Integer'Min
+                 (Long_Integer (Block_Size) - Pos mod Long_Integer (Block_Size),
+                  Image_Bytes - Pos);
                if not Pwrite (Erased (0 .. Natural (Len) - 1), Pos) then
                   Abandon (Result, IO_Failed);
                   return;
@@ -212,11 +224,10 @@ package body Legder.File_Device with SPARK_Mode => Off is
       Got : Natural;
    begin
       Check_Usable;
-      if Index > Block_Count then
-         Data := Erased;
-         return;
+      if Index > Last_Block then
+         raise Device_Error with "read past last block" & Last_Block'Image;
       end if;
-      if not Pread (Data, Offset (Index), Got) then
+      if not Pread (Data, Offset (Index), Got) or else Got /= Data'Length then
          Fail ("read failed at block" & Index'Image);
       end if;
    end Read;
@@ -224,8 +235,8 @@ package body Legder.File_Device with SPARK_Mode => Off is
    procedure Write (Index : Block_Index; Data : Block) is
    begin
       Check_Usable;
-      if Index > Block_Count then
-         raise Device_Error with "write past last block" & Block_Count'Image;
+      if Index > Last_Block then
+         raise Device_Error with "write past last block" & Last_Block'Image;
       end if;
       if not Pwrite (Data, Offset (Index)) then
          Fail ("write failed at block" & Index'Image);
@@ -275,7 +286,7 @@ package body Legder.File_Device with SPARK_Mode => Off is
    procedure Erase is
    begin
       Check_Usable;
-      for I in Block_Index range 0 .. Block_Count loop
+      for I in Block_Index range 0 .. Last_Block loop
          Write (I, Erased);
       end loop;
       Sync;

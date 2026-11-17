@@ -5,26 +5,32 @@ with Ada.Directories;
 with Ada.Exceptions;
 with Ada.Text_IO;          use Ada.Text_IO;
 with GNAT.OS_Lib;
-with Legder;               use Legder;
+with Legder;
 with Legder.File_Device;
 with Legder.Store;
+with Legder.Header;
 
 procedure File_Device_Tests is
 
-   K_Bytes : constant Key_Size   := 8;
-   V_Bytes : constant Value_Size := 8;
+   package App is new Legder (8, 8);
+   use App;
+   package Hdr is new App.Header;
+   K_Bytes : constant := Key'Length;
+   V_Bytes : constant := Value'Length;
 
-   package Dev  is new Legder.File_Device (Last_Block => 63);
-   package Dev2 is new Legder.File_Device (Last_Block => 63);
-   package KV   is new Legder.Store (K_Bytes, V_Bytes, Dev.Block_Count, Dev.Read, Dev.Write, Dev.Sync);
-   package KV16 is new Legder.Store (K_Bytes, 16, Dev.Block_Count, Dev.Read, Dev.Write, Dev.Sync);
+   package Dev  is new App.File_Device (Blocks => 64);
+   package Dev2 is new App.File_Device (Blocks => 64);
+   package KV   is new App.Store (Dev.Last_Block, Dev.Read, Dev.Write, Dev.Sync);
+   package Other is new Legder (4, 12);
+   package Other_Dev is new Other.File_Device (Blocks => 64);
 
-   package Big is new Legder.File_Device (Last_Block => Block_Index'Last);
-   package KVB is new Legder.Store (K_Bytes, V_Bytes, Big.Block_Count, Big.Read, Big.Write, Big.Sync);
+   package Big is new App.File_Device (Blocks => Max_Blocks);
+   package KVB is new App.Store (Big.Last_Block, Big.Read, Big.Write, Big.Sync);
 
    use type Dev.Open_Result;
    use type Dev2.Open_Result;
    use type Big.Open_Result;
+   use type Other_Dev.Open_Result;
 
    Failures : Natural := 0;
 
@@ -41,10 +47,10 @@ procedure File_Device_Tests is
          (if I <= S'Length then Byte (Character'Pos (S (S'First + I - 1))) else 0)]);
 
    function K (S : String) return Key is
-     ((Length => K_Bytes, Bytes => Pad (S, Max_Key)));
+     (Key (Pad (S, K_Bytes)));
 
    function V (S : String) return Value is
-     ((Length => V_Bytes, Bytes => Pad (S, Max_Value)));
+     (Value (Pad (S, V_Bytes)));
 
    function Trim (S : String) return String is
      (if S'Length > 0 and then S (S'First) = ' ' then S (S'First + 1 .. S'Last) else S);
@@ -117,7 +123,7 @@ procedure File_Device_Tests is
       function Has (S : KV.Store; Name, Want : String) return Boolean is
       begin
          KV.Get (S, K (Name), Got, Fnd);
-         return Fnd and then Same (Got, V (Want));
+          return Fnd and then Got = V (Want);
       end Has;
 
       function Absent (S : KV.Store; Name : String) return Boolean is
@@ -140,14 +146,14 @@ procedure File_Device_Tests is
 
       procedure Write_Past_End is
       begin
-         Dev.Write (Dev.Block_Count + 1, [others => 0]);
+          Dev.Write (Dev.Last_Block + 1, [others => 0]);
       end Write_Past_End;
 
    begin
       Put_Line ("-- fresh file");
       Dev.Open (Path, R);
       Check ("new file opens", R = Dev.Ok);
-      Check ("new file is full size", Size (Path) = Dev.Image_Bytes);
+       Check ("new file is full size", Size (Path) = 64 * (8 + 8 + 13));
       Check ("new file is erased", (for all B of Slurp (Path) => B = 16#FF#));
       declare
          S : KV.Store;
@@ -164,8 +170,17 @@ procedure File_Device_Tests is
           KV.Put (S, K ("a"), V ("1"), Update);
           KV.Put (S, K ("b"), V ("2"), Update);
           KV.Put (S, K ("a"), V ("3"), Update);
-          KV.Delete (S, K ("b"), Update);
-          Check ("four commits", Update = Applied);
+           KV.Delete (S, K ("b"), Update);
+           Check ("four commits", Update = Applied);
+           declare
+              Img : constant Byte_Array := Slurp (Path);
+           begin
+              Check ("records start at the configured stride",
+                     Img (29) = 0 and then Img (30) = 1
+                     and then Img (29 + 9) = Byte (Character'Pos ('a'))
+                     and then Img (4 * 29) = 1
+                     and then Img (4 * 29 + 1) = 4);
+           end;
       end;
 
       Put_Line ("-- one writer");
@@ -226,14 +241,17 @@ procedure File_Device_Tests is
       end;
 
       Put_Line ("-- wrong K/V for this file");
-      declare
-         Before : constant Byte_Array := Slurp (Path);
-         S      : KV16.Store;
-      begin
-         KV16.Open (S, N, St);
-         Check ("different V is Wrong_Sizes", St = Wrong_Sizes);
-         Check ("and nothing written", Slurp (Path) = Before);
-      end;
+       Dev.Close;
+       declare
+          Before : constant Byte_Array := Slurp (Path);
+          Other_Result : Other_Dev.Open_Result;
+       begin
+          Other_Dev.Open (Path, Other_Result);
+          Check ("same stride but different K/V refused without writes",
+                 Other_Result = Other_Dev.Wrong_Sizes
+                 and then not Other_Dev.Is_Open and then Slurp (Path) = Before);
+       end;
+       Dev.Open (Path, R);
 
       Put_Line ("-- fail-stop");
       Check ("write past the last block raises", Raises (Write_Past_End'Access));
@@ -258,7 +276,28 @@ procedure File_Device_Tests is
       end;
       Dev.Close;
 
-      Put_Line ("-- files that are not ours");
+       Put_Line ("-- files that are not ours");
+       declare
+          Old_Path : constant String := Ada.Directories.Compose (Dir, "old.ldgr");
+          Header : Block;
+          Image : Byte_Array (0 .. 511) := [others => 16#FF#];
+          Sum : CRC32;
+       begin
+          Hdr.Encode ((Version => Hdr.Current_Version, K => K_Bytes, V => V_Bytes), Header);
+          Header (4) := 1;
+          Sum := CRC (Header (0 .. 7));
+          for I in 0 .. 3 loop
+             Header (8 + I) := Byte (Sum and 16#FF#);
+             Sum := Sum / 256;
+          end loop;
+          Image (0 .. Block_Size - 1) := Header;
+          Image (Block_Size .. 511) := [others => 0];
+          Spit (Old_Path, Image);
+          Dev.Open (Old_Path, R);
+          Check ("version 1 image refused without writes",
+                 R = Dev.Bad_Version and then not Dev.Is_Open
+                 and then Slurp (Old_Path) = Image);
+       end;
       declare
          Txt  : constant String := Ada.Directories.Compose (Dir, "notes.txt");
          Text : constant Byte_Array := Pad ("hello, this is not a store", 26);
@@ -274,7 +313,8 @@ procedure File_Device_Tests is
          Spit (Huge, [0 .. Natural (Dev.Image_Bytes) + Block_Size - 1 => 16#FF#]);
          Dev.Open (Huge, R);
          Check ("bigger than the device is Too_Large", R = Dev.Too_Large);
-         Check ("and left untouched", Size (Huge) = Dev.Image_Bytes + Block_Size);
+         Check ("and left untouched",
+                Size (Huge) = Dev.Image_Bytes + Long_Integer (Block_Size));
       end;
       Dev.Open (Dir, R);
       Check ("a directory is Cannot_Open", R = Dev.Cannot_Open);
@@ -357,7 +397,7 @@ procedure File_Device_Tests is
                end if;
             end loop;
             KVB.Get (S, K ("k" & Trim (J'Image)), Got, Fnd);
-            if Fnd /= (Last > 0) or else (Fnd and then not Same (Got, Val_Of (Last))) then
+             if Fnd /= (Last > 0) or else (Fnd and then Got /= Val_Of (Last)) then
                Bad := True;
             end if;
          end;

@@ -5,14 +5,16 @@ This is the Storage_Adapter in the class diagram; its `Read`, `Write`
 and `Sync` are the device formals of `Legder.Log` / `Legder.Store`.
 
 ```ada
+with Legder;
 with Legder.File_Device;
 with Legder.Store;
 
-package Dev is new Legder.File_Device (Last_Block => 255);   --  128 KiB file
-package KV  is new Legder.Store
-  (8, 4, Dev.Block_Count, Dev.Read, Dev.Write, Dev.Sync);
+package Model is new Legder (K_Size => 8, V_Size => 4);
+package Dev is new Model.File_Device (Blocks => 256);
+package KV is new Model.Store
+  (Dev.Last_Block, Dev.Read, Dev.Write, Dev.Sync, Capacity => 256);
 
-Dev.Open ("settings.ldgr", Result);     --  creates it on first use
+Dev.Open ("settings.ldgr", Result);
 if Result = Dev.Ok then
    KV.Open (S, Replayed, Status);
 end if;
@@ -21,12 +23,16 @@ end if;
 Add `legder_file_device` to your crate's dependencies (pinned by path
 like `legder`), and `with "legder_file_device";` in your project.
 
-## What it promises
+This configuration uses 25-byte blocks and a 6,400-byte image, including
+the header block. Omitting K and V selects 32 and 256, producing 301-byte
+blocks. `Blocks` includes the header and is independent of live capacity.
+
+## Storage behavior
 
 | Fault model (top-level README) | How |
 |---|---|
-| a block write is whole or torn | block `I` lives at byte `I * 512`; a torn one fails its record CRC |
-| writes before the last Sync are durable | `fsync` (Linux), `F_FULLFSYNC` (macOS), `_commit` (Windows) |
+| logical block addressing | block `I` lives at byte `I * Block_Size` |
+| writes before the last Sync are durable | `fsync` (Linux), `_commit` (Windows) |
 | writes after it may vanish | nothing relies on them |
 
 Plus:
@@ -34,21 +40,23 @@ Plus:
 - **New files are erased flash.** Created at full size, filled with
   `FF`, synced, and the directory synced, before `Open` returns `Ok`.
 - **Short files recover.** A file cut off mid-creation is extended with
-  `FF`; a partial block reads as torn.
+  `FF` after header validation; a partial record remains torn.
 - **It never scribbles on files that are not stores.** If block 0 is
   neither erased nor a legder header, `Open` returns `Foreign` and
-  writes nothing. A file larger than the device is `Too_Large`.
+  writes nothing. Version 1 images return `Bad_Version`, and different
+  K/V sizes return `Wrong_Sizes`, before extension. An oversized file
+  returns `Too_Large` without modification.
 - **One writer.** `Open` takes a non-blocking exclusive lock
   (`flock` / `LockFileEx`); a second opener gets `Locked`.
-- **Fail-stop.** The device formals have no status parameter, so I/O
-  errors raise `Device_Error`. The store only touches its table after
-  `Append` returns, so the table still matches the log. The device then
-  refuses all I/O until `Close` + `Open`: after a failed fsync the
-  kernel may have dropped the data already, so a retried Sync could lie.
+- **Fail-stop.** The device formals report `Failed` on I/O errors.
+  Direct exception-bearing operations raise `Device_Error`. The device
+  refuses further I/O until `Close` + `Open`, and Store requires recovery
+  after a storage failure.
 
-`src/legder_file_device.c` is the only C: sync, lock, and directory
-sync, the three calls `GNAT.OS_Lib` lacks. This crate is outside
-SPARK, as the rules require for non-RAM devices.
+Target-selected Ada bindings implement sync, locking, and positional I/O.
+This crate is outside SPARK. Logical block size does not establish a
+physical failure boundary; the backend requirements remain those in
+`../../docs/storage-contract.md`.
 
 ## Tests
 
@@ -65,5 +73,4 @@ that committed before its ack was printed). `SIGKILL` keeps the kernel
 page cache, so it does not lose unsynced writes the way power loss
 does; that half of the milestone is the board with its plug pulled.
 
-Tested on Linux (ext4). The macOS and Windows branches of the C shim
-compile-time select the right sync and lock but have not been run.
+Verified on 64-bit Linux. Windows testing is not complete yet.

@@ -13,27 +13,24 @@ procedure Legder_CLI is
    use Ada.Text_IO;
    use Ada.Strings.Fixed;
    use Ada.Characters.Handling;
-   use type Legder.Open_Status;
-   use type Legder.Byte;
+   package Model is new Legder (K_Size => 32, V_Size => 64);
+   use type Model.Open_Status;
+   use type Model.Byte;
 
-   Key_Bytes   : constant Legder.Key_Size := 32;
-   Value_Bytes : constant Legder.Value_Size := 64;
-
-   package File_Dev is new Legder.File_Device (Last_Block => 255);
+   package File_Dev is new Model.File_Device (Blocks => 256);
+   package RAM_Dev is new Model.RAM_Device (Blocks => 256);
    use type File_Dev.Open_Result;
 
-   package File_KV is new Legder.Store
-     (K_Size => Key_Bytes, V_Size => Value_Bytes,
-      Block_Count => File_Dev.Block_Count,
+   package File_KV is new Model.Store
+     (Last_Block => File_Dev.Last_Block,
       Read => File_Dev.Read, Write => File_Dev.Write,
       Sync => File_Dev.Sync, Capacity => 128);
 
-   package RAM_KV is new Legder.Store
-     (K_Size => Key_Bytes, V_Size => Value_Bytes,
-      Block_Count => Legder.RAM_Device.Block_Count,
-      Read => Legder.RAM_Device.Read,
-      Write => Legder.RAM_Device.Write,
-      Sync => Legder.RAM_Device.Sync, Capacity => 128);
+   package RAM_KV is new Model.Store
+     (Last_Block => RAM_Dev.Last_Block,
+      Read => RAM_Dev.Read,
+      Write => RAM_Dev.Write,
+      Sync => RAM_Dev.Sync, Capacity => 128);
 
    type Device_Kind is (None, File_Backend, RAM_Backend);
    Active : Device_Kind := None;
@@ -42,40 +39,38 @@ procedure Legder_CLI is
    Path : String (1 .. 512) := [others => ' '];
    Path_Len : Natural := 0;
 
-   function Make_Key (S : String) return Legder.Key is
-      K : Legder.Key;
+   function Make_Key (S : String) return Model.Key is
+      K : Model.Key;
    begin
-      K.Length := Key_Bytes;
       for I in S'Range loop
-         K.Bytes (I - S'First + 1) :=
-           Legder.Byte (Character'Pos (S (I)));
+         K (I - S'First + 1) :=
+           Model.Byte (Character'Pos (S (I)));
       end loop;
       return K;
    end Make_Key;
 
-   function Make_Value (S : String) return Legder.Value is
-      V : Legder.Value;
+   function Make_Value (S : String) return Model.Value is
+      V : Model.Value;
    begin
-      V.Length := Value_Bytes;
       for I in S'Range loop
-         V.Bytes (I - S'First + 1) :=
-           Legder.Byte (Character'Pos (S (I)));
+         V (I - S'First + 1) :=
+           Model.Byte (Character'Pos (S (I)));
       end loop;
       return V;
    end Make_Value;
 
-   function Value_Text (V : Legder.Value) return String is
+   function Value_Text (V : Model.Value) return String is
       N : Natural := 0;
    begin
-      for I in 1 .. Natural (Value_Bytes) loop
-         exit when V.Bytes (I) = 0;
+      for I in V'Range loop
+         exit when V (I) = 0;
          N := I;
       end loop;
       declare
          S : String (1 .. N);
       begin
          for I in S'Range loop
-            S (I) := Character'Val (Integer (V.Bytes (I)));
+            S (I) := Character'Val (Integer (V (I)));
          end loop;
          return S;
       end;
@@ -97,7 +92,7 @@ procedure Legder_CLI is
 
    procedure Open_File (Name : String) is
       Result : File_Dev.Open_Result;
-      Status : Legder.Open_Status;
+      Status : Model.Open_Status;
       Replayed : Natural;
    begin
       if Name'Length = 0 or else Name'Length > Path'Length then
@@ -117,7 +112,7 @@ procedure Legder_CLI is
             File_Dev.Close;
             raise;
       end;
-      if Status /= Legder.Opened then
+      if Status /= Model.Opened then
          Put_Line ("Store error: " & Status'Image);
          File_Dev.Close;
          return;
@@ -131,13 +126,13 @@ procedure Legder_CLI is
    end Open_File;
 
    procedure Open_RAM is
-      Status : Legder.Open_Status;
+      Status : Model.Open_Status;
       Replayed : Natural;
    begin
       Unload;
       --  Preserve RAM blocks so reopening replays the log.
       RAM_KV.Open (RAM_DB, Replayed, Status);
-      if Status = Legder.Opened then
+      if Status = Model.Opened then
          Active := RAM_Backend;
          Put_Line
            ("RAM store opened. Records replayed:" & Replayed'Image);
@@ -147,7 +142,7 @@ procedure Legder_CLI is
    end Open_RAM;
 
    procedure Store_Put
-     (K : Legder.Key; V : Legder.Value; Result : out Legder.Update_Result)
+     (K : Model.Key; V : Model.Value; Result : out Model.Update_Result)
    is
    begin
       case Active is
@@ -156,12 +151,12 @@ procedure Legder_CLI is
          when RAM_Backend =>
             RAM_KV.Put (RAM_DB, K, V, Result);
          when None =>
-            Result := Legder.Closed;
+            Result := Model.Closed;
       end case;
    end Store_Put;
 
    procedure Store_Get
-     (K : Legder.Key; V : out Legder.Value; Found : out Boolean)
+     (K : Model.Key; V : out Model.Value; Found : out Boolean)
    is
    begin
       case Active is
@@ -170,13 +165,13 @@ procedure Legder_CLI is
          when RAM_Backend =>
             RAM_KV.Get (RAM_DB, K, V, Found);
          when None =>
-            V := (others => <>);
+            V := [others => 0];
             Found := False;
       end case;
    end Store_Get;
 
    procedure Store_Delete
-     (K : Legder.Key; Result : out Legder.Update_Result)
+     (K : Model.Key; Result : out Model.Update_Result)
    is
    begin
       case Active is
@@ -185,20 +180,20 @@ procedure Legder_CLI is
          when RAM_Backend =>
             RAM_KV.Delete (RAM_DB, K, Result);
          when None =>
-            Result := Legder.Closed;
+            Result := Model.Closed;
       end case;
    end Store_Delete;
 
-   procedure Report_Update (Result : Legder.Update_Result) is
+   procedure Report_Update (Result : Model.Update_Result) is
    begin
       case Result is
-         when Legder.Applied =>
+         when Model.Applied =>
             Put_Line ("OK");
-         when Legder.No_Space =>
+         when Model.No_Space =>
             Put_Line ("Update failed: no space.");
-         when Legder.Closed =>
+         when Model.Closed =>
             Put_Line ("Update failed: store closed.");
-         when Legder.Storage_Failure =>
+         when Model.Storage_Failure =>
             Put_Line ("Update failed: storage failure. Store unloaded.");
             Unload;
       end case;
@@ -230,7 +225,8 @@ procedure Legder_CLI is
       Put_Line ("status             Display active device");
       Put_Line ("ram erase          Erase RAM store (RAM only)");
       Put_Line ("help | exit");
-      Put_Line ("Keys: 1-32 bytes; values: 1-64 bytes.");
+      Put_Line ("Keys: 1 .." & Model.Key'Length'Image & " bytes; values: 1 .."
+                & Model.Value'Length'Image & " bytes.");
    end Help;
 
 
@@ -293,7 +289,7 @@ procedure Legder_CLI is
       end if;
 
       return Length (Key_Text) > 0
-        and then Length (Key_Text) <= Natural (Key_Bytes);
+        and then Length (Key_Text) <= Model.Key'Length;
    end Parse_Key;
 
    procedure Execute (Line : String) is
@@ -307,8 +303,8 @@ procedure Legder_CLI is
            (Line (Space_1 + 1 .. Line'Last),
             Ada.Strings.Both));
       Found : Boolean;
-      Result : Legder.Update_Result;
-      V : Legder.Value;
+      Result : Model.Update_Result;
+      V : Model.Value;
    begin
       if Cmd = "help" then
          Help;
@@ -351,7 +347,7 @@ procedure Legder_CLI is
       elsif Cmd = "ram" and then To_Lower (Args) = "erase" then
          if Active = RAM_Backend then
             Unload;
-            Legder.RAM_Device.Erase;
+            RAM_Dev.Erase;
             Open_RAM;
             Put_Line ("RAM store erased.");
          else
@@ -368,10 +364,10 @@ procedure Legder_CLI is
          elsif Active = RAM_Backend then
             Put_Line
               ("RAM writes:" &
-               Natural'Image (Legder.RAM_Device.Writes));
+               Natural'Image (RAM_Dev.Writes));
             Put_Line
               ("RAM syncs:" &
-               Natural'Image (Legder.RAM_Device.Syncs));
+               Natural'Image (RAM_Dev.Syncs));
          end if;
          if Active /= None then
             Put_Line ("Live keys:" & Natural'Image (Store_Count));
@@ -404,7 +400,7 @@ procedure Legder_CLI is
                              Ada.Strings.Both);
                   begin
                      if Data'Length = 0
-                       or else Data'Length > Natural (Value_Bytes)
+                       or else Data'Length > Model.Value'Length
                      then
                         Put_Line ("Invalid value length.");
                      else
