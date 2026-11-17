@@ -38,7 +38,8 @@ blocks. `Blocks` includes the header and is independent of live capacity.
 Plus:
 
 - **New files are erased flash.** Created at full size, filled with
-  `FF`, synced, and the directory synced, before `Open` returns `Ok`.
+  `FF` and synced before `Open` returns `Ok`. Linux also syncs the
+  containing directory.
 - **Short files recover.** A file cut off mid-creation is extended with
   `FF` after header validation; a partial record remains torn.
 - **It never scribbles on files that are not stores.** If block 0 is
@@ -50,10 +51,13 @@ Plus:
   (`flock` / `LockFileEx`); a second opener gets `Locked`.
 - **Fail-stop.** The device formals report `Failed` on I/O errors.
   Direct exception-bearing operations raise `Device_Error`. The device
-  refuses further I/O until `Close` + `Open`, and Store requires recovery
-  after a storage failure.
+  refuses further I/O until `Close` + `Open`. That resets the device
+  handle, but does not establish safe recovery after a Linux writeback
+  error. Shared recovery protection is tracked in
+  [#29](https://github.com/James-Wolfley/legder/issues/29).
 
 Target-selected Ada bindings implement sync, locking, and positional I/O.
+Linux retries interrupted calls and completes short transfers.
 This crate is outside SPARK. Logical block size does not establish a
 physical failure boundary; the backend requirements remain those in
 `../../docs/storage-contract.md`.
@@ -70,7 +74,7 @@ The crash test kills the process at any instruction, including during
 file creation and the header write, and checks that the reopened store
 is exactly Puts `1 .. N` with `N` = last ack or last ack + 1 (the Put
 that committed before its ack was printed). `SIGKILL` keeps the kernel
-page cache, so it does not lose unsynced writes the way power loss
-does; that half of the milestone is the board with its plug pulled.
+page cache, so these checks do not establish power-loss safety or recovery
+after failed writeback.
 
 Verified on 64-bit Linux. Windows testing is not complete yet.

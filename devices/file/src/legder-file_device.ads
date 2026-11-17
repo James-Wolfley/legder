@@ -1,8 +1,7 @@
 --  A block device backed by one file on a desktop file system.
 --  Sync uses fsync on Linux and _commit on Windows. After an I/O error,
---  the device refuses I/O until closed and reopened. A failed fsync may
---  have discarded dirty pages, so retrying Sync is not safe. Reopen the
---  store as well to recover through replay.
+--  the device refuses I/O until closed and reopened. Reopening alone
+--  does not establish safe recovery after a Linux writeback error.
 
 generic
    Blocks : Positive := 256;
@@ -42,9 +41,8 @@ package Legder.File_Device with SPARK_Mode => Off is
    --  Windows leaves that entry to the file system's journal.
 
    procedure Close;
-   --  Releases the file and the lock. No Sync: anything not synced may
-   --  be lost, exactly as on power loss. Safe to repeat. Clears a
-   --  failed state.
+   --  Releases the file and lock without Sync. Safe to repeat. Clears
+   --  the device failure flag, not the uncertain storage outcome.
 
    function Is_Open return Boolean;
 
@@ -56,7 +54,7 @@ package Legder.File_Device with SPARK_Mode => Off is
    procedure Write (Index : Block_Index; Data : Block);
 
    procedure Sync;
-   --  Returns only when every earlier Write is on stable storage.
+   --  Synchronizes pending writes; raises Device_Error on failure.
 
    procedure Read
      (Index : Block_Index; Data : out Block; Result : out Device_Result);
