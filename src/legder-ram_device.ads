@@ -1,8 +1,12 @@
 --  A block device in memory, with crash injection.
 
+generic
+   Blocks : Positive := 256;
 package Legder.RAM_Device with SPARK_Mode is
 
-   Block_Count : constant Block_Index := 255;  --  256 blocks, 128 KiB
+   subtype Block_Total is Positive range 1 .. Max_Blocks;
+   Valid_Blocks : constant Block_Total := Blocks;
+   Last_Block : constant Block_Index := Block_Index (Valid_Blocks - 1);
 
    procedure Read  (Index : Block_Index; Data : out Block; Result : out Device_Result);
    procedure Write (Index : Block_Index; Data : Block; Result : out Device_Result);

@@ -1,10 +1,10 @@
 package body Legder.RAM_Device with SPARK_Mode is
 
-   subtype Idx is Block_Index range 0 .. Block_Count;
-   type Blocks is array (Idx) of Block;
+   subtype Idx is Block_Index range 0 .. Last_Block;
+   type Block_Array is array (Idx) of Block;
 
-   Durable   : Blocks := [others => [others => 16#FF#]];
-   Pending   : Blocks := [others => [others => 16#FF#]];
+   Durable   : Block_Array := [others => [others => 16#FF#]];
+   Pending   : Block_Array := [others => [others => 16#FF#]];
    Dirty     : array (Idx) of Boolean := [others => False];
    Tear      : Boolean := False;
    N_Writes  : Natural := 0;
@@ -12,7 +12,7 @@ package body Legder.RAM_Device with SPARK_Mode is
 
    procedure Read (Index : Block_Index; Data : out Block; Result : out Device_Result) is
    begin
-      if Index > Block_Count then
+      if Index > Last_Block then
          Data := [others => 16#FF#];
          Result := Failed;
          return;
@@ -26,7 +26,7 @@ package body Legder.RAM_Device with SPARK_Mode is
 
    procedure Write (Index : Block_Index; Data : Block; Result : out Device_Result) is
    begin
-      if Index > Block_Count then
+      if Index > Last_Block then
          Result := Failed;
          return;
       end if;

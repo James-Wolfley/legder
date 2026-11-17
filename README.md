@@ -1,7 +1,7 @@
 # legder
 
 A crash-safe transactional storage engine you can prove correct.
-Fixed block device underneath, write-ahead log in the middle, a
+Application-sized blocks underneath, write-ahead log in the middle, a
 bounded key-value store on top. Ada/SPARK, no heap, no access types.
 
 GNAT Academic Program capstone project. Proposal title: *Legder:
@@ -41,10 +41,16 @@ showcase/                     write, tear a block, recover, check            acc
 tests/                        30 checks incl. CRC vectors and crash cases    extend as you go
 ```
 
-Everything compiles, the crash tests pass, and recovery works. What is
-a placeholder is the store's index: a linear scan over a 256-entry
-array. Correct and slow. What is missing entirely is compaction: the
+The store's index is a linear scan over a bounded array, with a default
+capacity of 256 live entries. What is missing entirely is compaction: the
 log only grows, and when the device is full, Put fails.
+
+Instantiate `Legder` with the application's key and value byte sizes,
+or use the defaults of 32 and 256. Blocks contain exactly `K + V + 13`
+bytes. Instantiate that configuration's device and `Store`, overriding
+the store's `Capacity` when needed. Device `Blocks` includes the header;
+it is independent of the number of live entries. Format version 2 rejects
+older images without converting them.
 
 Read `ARCHITECTURE.md` before touching anything.
 
@@ -78,7 +84,7 @@ the library by path.
 alr build                       # library
 cd showcase && alr build && alr run
 cd tests && alr build && ./bin/tests
-alr with gnatprove && alr exec -- gnatprove -P legder.gpr --mode=flow
+cd tests && alr exec -- gnatprove -P legder_tests.gpr --mode=flow -u flow_instances.ads
 ```
 
 Contracts are checked at runtime in every build (`-gnata`).

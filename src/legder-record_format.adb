@@ -4,13 +4,8 @@ package body Legder.Record_Format with SPARK_Mode is
    Off_Seq  : constant := 1;
    Off_Key  : constant := 9;
 
-   function Off_Value (K_Size : Key_Size) return Block_Offset is
-     (Block_Offset (Off_Key + K_Size));
-
-   function Off_CRC (K_Size : Key_Size; V_Size : Value_Size) return Block_Offset is
-     (Block_Offset (Off_Key + K_Size + V_Size))
-     with Pre => Off_Key + K_Size + V_Size <= Block_Size - 4;
-   --  The CRC trails the payload, so its input is one unbroken range.
+   Off_Value : constant Block_Offset := Off_Key + Key'Length;
+   Off_CRC   : constant Block_Offset := Off_Value + Value'Length;
 
    procedure Put_U32 (B : in out Block; At_Off : Block_Offset; V : CRC32)
      with Pre => At_Off <= Block_Size - 4;
@@ -57,36 +52,27 @@ package body Legder.Record_Format with SPARK_Mode is
       return X;
    end Get_U64;
 
-   ------------
-   -- Encode --
-   ------------
-
-   procedure Encode (R : Log_Record; K_Size : Key_Size; V_Size : Value_Size; B : out Block) is
-      CRC_At : constant Block_Offset := Off_CRC (K_Size, V_Size);
-      Val_At : constant Block_Offset := Off_Value (K_Size);
+   procedure Encode (R : Log_Record; B : out Block) is
+      CRC_At : constant Block_Offset := Off_CRC;
+      Val_At : constant Block_Offset := Off_Value;
    begin
       B := [others => 0];
       B (Off_Kind) := (case R.Kind is when Put => 0, when Delete => 1);
       Put_U64 (B, Off_Seq, R.Seq);
-      for I in 1 .. K_Size loop
-         B (Off_Key + I - 1) := R.K.Bytes (I);
+      for I in Key'Range loop
+         B (Off_Key + I - 1) := R.K (I);
       end loop;
       if R.Kind = Put then
-         for I in 1 .. V_Size loop
-            B (Val_At + I - 1) := R.V.Bytes (I);
+         for I in Value'Range loop
+            B (Val_At + I - 1) := R.V (I);
          end loop;
       end if;
       Put_U32 (B, CRC_At, CRC (B (0 .. CRC_At - 1)));
    end Encode;
 
-   ------------
-   -- Decode --
-   ------------
-
-   procedure Decode (B : Block; K_Size : Key_Size; V_Size : Value_Size;
-                     R : out Log_Record; Valid : out Boolean) is
-      CRC_At : constant Block_Offset := Off_CRC (K_Size, V_Size);
-      Val_At : constant Block_Offset := Off_Value (K_Size);
+   procedure Decode (B : Block; R : out Log_Record; Valid : out Boolean) is
+      CRC_At : constant Block_Offset := Off_CRC;
+      Val_At : constant Block_Offset := Off_Value;
    begin
       R := (others => <>);
       Valid := False;
@@ -102,17 +88,15 @@ package body Legder.Record_Format with SPARK_Mode is
       R.Seq  := Get_U64 (B, Off_Seq);
       R.Kind := (if B (Off_Kind) = 0 then Put else Delete);
 
-      R.K.Length := K_Size;
-      for I in 1 .. K_Size loop
-         R.K.Bytes (I) := B (Off_Key + I - 1);
+      for I in Key'Range loop
+         R.K (I) := B (Off_Key + I - 1);
       end loop;
 
-      R.V.Length := V_Size;
       if R.Kind = Put then
-         for I in 1 .. V_Size loop
-            R.V.Bytes (I) := B (Val_At + I - 1);
+         for I in Value'Range loop
+            R.V (I) := B (Val_At + I - 1);
          end loop;
-      elsif (for some I in 1 .. V_Size => B (Val_At + I - 1) /= 0) then
+      elsif (for some I in Value'Range => B (Val_At + I - 1) /= 0) then
          --  A Delete's payload is V zero bytes.
          return;
       end if;

@@ -9,6 +9,7 @@
 with GNAT.OS_Lib;
 with System;
 
+generic
 package Legder.File_Device_OS with SPARK_Mode => Off is
 
    type Lock_Result is

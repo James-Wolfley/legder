@@ -3,19 +3,21 @@
 with Ada.Command_Line;
 with Ada.Text_IO;       use Ada.Text_IO;
 with Interfaces;
-with Legder;            use Legder;
+with Legder;
 with Legder.RAM_Device;
 with Legder.Store;
 
 procedure Showcase is
 
-   package Dev renames Legder.RAM_Device;
+   package App is new Legder (8, 4);
+   use App;
+   package Dev is new App.RAM_Device;
 
-   K_Bytes : constant Key_Size   := 8;
-   V_Bytes : constant Value_Size := 4;
+   K_Bytes : constant := Key'Length;
+   V_Bytes : constant := Value'Length;
 
-   package KV is new Legder.Store
-     (K_Bytes, V_Bytes, Dev.Block_Count, Dev.Read, Dev.Write, Dev.Sync);
+   package KV is new App.Store
+     (Dev.Last_Block, Dev.Read, Dev.Write, Dev.Sync);
 
    subtype Int32 is Interfaces.Integer_32;
 
@@ -38,9 +40,8 @@ procedure Showcase is
       U : Interfaces.Unsigned_32 :=
         Interfaces.Unsigned_32 (Interfaces.Integer_64 (X) mod 2 ** 32);
    begin
-      R.Length := V_Bytes;
       for I in 1 .. V_Bytes loop
-         R.Bytes (I) := Byte (U and 16#FF#);
+         R (I) := Byte (U and 16#FF#);
          U := U / 256;
       end loop;
       return R;
@@ -51,7 +52,7 @@ procedure Showcase is
       S : Interfaces.Integer_64;
    begin
       for I in reverse 1 .. V_Bytes loop
-         U := U * 256 + Interfaces.Unsigned_32 (X.Bytes (I));
+         U := U * 256 + Interfaces.Unsigned_32 (X (I));
       end loop;
       S := Interfaces.Integer_64 (U);
       if S >= 2 ** 31 then
@@ -66,9 +67,8 @@ procedure Showcase is
       if S'Length > K_Bytes then
          raise Constraint_Error with "key longer than" & K_Bytes'Image & " bytes";
       end if;
-      R.Length := K_Bytes;
       for I in 1 .. K_Bytes loop
-         R.Bytes (I) :=
+         R (I) :=
            (if I <= S'Length then Byte (Character'Pos (S (S'First + I - 1))) else 0);
       end loop;
       return R;
@@ -80,23 +80,22 @@ procedure Showcase is
       if S'Length > V_Bytes then
          raise Constraint_Error with "value longer than" & V_Bytes'Image & " bytes";
       end if;
-      R.Length := V_Bytes;
       for I in 1 .. V_Bytes loop
-         R.Bytes (I) :=
+         R (I) :=
            (if I <= S'Length then Byte (Character'Pos (S (S'First + I - 1))) else 0);
       end loop;
       return R;
    end V;
 
    function Img (X : Value) return String is
-      Last : Natural := X.Length;
+      Last : Natural := X'Length;
    begin
-      while Last > 0 and then X.Bytes (Last) = 0 loop
+      while Last > 0 and then X (Last) = 0 loop
          Last := Last - 1;
       end loop;
       return Result : String (1 .. Last) do
          for I in Result'Range loop
-            Result (I) := Character'Val (X.Bytes (I));
+            Result (I) := Character'Val (X (I));
          end loop;
       end return;
    end Img;
@@ -217,8 +216,8 @@ begin
    begin
       V4 := Int_Value (16#12345678#);
       Check ("16#12345678# stored as 78 56 34 12",
-             V4.Bytes (1) = 16#78# and then V4.Bytes (2) = 16#56#
-             and then V4.Bytes (3) = 16#34# and then V4.Bytes (4) = 16#12#);
+              V4 (1) = 16#78# and then V4 (2) = 16#56#
+              and then V4 (3) = 16#34# and then V4 (4) = 16#12#);
       Check ("out of int32 range refused",
              not Fits_Int32 (2 ** 31) and not Fits_Int32 (-(2 ** 31) - 1));
    end;

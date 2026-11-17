@@ -4,12 +4,8 @@
 --  including effects of failed writes. Recovery may include an update that
 --  was not acknowledged.
 
-with Legder.Record_Format; use Legder.Record_Format;
-
 generic
-   K_Size      : Key_Size;
-   V_Size      : Value_Size;
-   Block_Count : Block_Index;
+   Last_Block : Block_Index;
    with procedure Read
      (Index : Block_Index; Data : out Block; Result : out Device_Result);
    with procedure Write
@@ -28,12 +24,11 @@ package Legder.Log with SPARK_Mode is
    end record;
 
    function Is_Full (S : State) return Boolean is
-     (S.Head > Natural (Block_Count));
+     (S.Head > Natural (Last_Block));
 
    procedure Inspect
      (S : out State; Recovered : out Natural; Status : out Open_Status)
-     with Pre  => Fits_In_Block (K_Size, V_Size),
-          Post => (if Status = Opened then S.Phase = Prepared
+     with Post => (if Status = Opened then S.Phase = Prepared
                    else S.Phase = Closed)
                   and then (if Status = Storage_Failure then Recovered = 0);
    --  Read the candidate prefix without writing or synchronizing.
@@ -48,9 +43,7 @@ package Legder.Log with SPARK_Mode is
    procedure Append
      (S : in out State; Kind : Op_Kind; K : Key; V : Value;
       Result : out Update_Result)
-     with Pre  => K.Length = K_Size
-                  and then (if Kind = Put then V.Length = V_Size),
-          Post => (if Result = Applied then
+     with Post => (if Result = Applied then
                       S.Phase = Ready
                       and then S.Head = S.Head'Old + 1
                       and then S.Last_Seq = S.Last_Seq'Old + 1

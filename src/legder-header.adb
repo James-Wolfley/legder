@@ -51,10 +51,6 @@ package body Legder.Header with SPARK_Mode is
       return X;
    end Get_U32;
 
-   ------------
-   -- Encode --
-   ------------
-
    procedure Encode (H : Header; B : out Block) is
    begin
       B := [others => 0];
@@ -64,10 +60,6 @@ package body Legder.Header with SPARK_Mode is
       Put_U16 (B, Off_Value_Size, H.V);
       Put_U32 (B, Off_CRC, CRC (B (Off_Magic .. Off_CRC - 1)));
    end Encode;
-
-   ------------
-   -- Decode --
-   ------------
 
    procedure Decode (B : Block; H : out Header; Result : out Status) is
       Found_K : constant Natural := Natural (B (Off_Key_Size));
@@ -88,7 +80,6 @@ package body Legder.Header with SPARK_Mode is
          Result := Unsupported_Version;
       elsif Found_K not in Key_Size
         or else Found_V not in Value_Size
-        or else not Fits_In_Block (Found_K, Found_V)
       then
          Result := Bad_Header;
       else
