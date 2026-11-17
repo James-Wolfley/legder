@@ -78,9 +78,12 @@ package body Legder.File_Device_OS with SPARK_Mode => Off is
       Length : Natural;
       Offset : Long_Integer) return Integer
    is
-      N : constant long :=
-        Pread (int (FD), Buffer, size_t (Length), long (Offset));
+      N : long;
    begin
+      loop
+         N := Pread (int (FD), Buffer, size_t (Length), long (Offset));
+         exit when N >= 0 or else Errno /= EINTR;
+      end loop;
       if N < 0 then
          return -1;
       end if;
@@ -93,9 +96,12 @@ package body Legder.File_Device_OS with SPARK_Mode => Off is
       Length : Natural;
       Offset : Long_Integer) return Integer
    is
-      N : constant long :=
-        Pwrite (int (FD), Buffer, size_t (Length), long (Offset));
+      N : long;
    begin
+      loop
+         N := Pwrite (int (FD), Buffer, size_t (Length), long (Offset));
+         exit when N >= 0 or else Errno /= EINTR;
+      end loop;
       if N < 0 then
          return -1;
       end if;
